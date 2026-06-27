@@ -1,0 +1,50 @@
+#pragma once
+
+#include <Arduino.h>
+#include <M5Unified.h>
+#include <JPEGDEC.h>
+
+#if __has_include("config.h")
+#include "config.h"
+#endif
+
+#ifndef DISPLAY_WIDTH
+#define DISPLAY_WIDTH 240
+#endif
+
+#ifndef DISPLAY_HEIGHT
+#define DISPLAY_HEIGHT 135
+#endif
+
+#ifndef JPEG_SCALE_POLICY
+#define JPEG_SCALE_POLICY JPEG_SCALE_QUARTER
+#endif
+
+class JpegDecoder {
+public:
+    bool begin();
+    bool drawFrame(const uint8_t* data, size_t length, float fps);
+
+    uint32_t lastDecodeMs() const;
+    int lastWidth() const;
+    int lastHeight() const;
+    const String& lastError() const;
+
+private:
+    JPEGDEC _jpeg;
+    uint32_t _lastDecodeMs = 0;
+    int _lastWidth = 0;
+    int _lastHeight = 0;
+    String _lastError = "not started";
+
+    int _drawX = 0;
+    int _drawY = 0;
+    int _displayW = DISPLAY_WIDTH;
+    int _displayH = DISPLAY_HEIGHT;
+
+    bool drawOverlay(float fps);
+    bool setError(const char* error);
+
+    static int jpegDrawCallback(JPEGDRAW* draw);
+    int drawBlock(JPEGDRAW* draw);
+};
