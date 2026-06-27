@@ -39,21 +39,27 @@ bool GrWifi::connect(uint32_t timeoutMs) {
     return true;
   }
 
-  const char* password = GR_WIFI_PASSWORD;
-  if (connectWithPassword(password, timeoutMs)) {
+  return connect(GR_WIFI_SSID, GR_WIFI_PASSWORD, timeoutMs);
+}
+
+bool GrWifi::connect(const char* ssid, const char* password, uint32_t timeoutMs) {
+  if (isConnected() && ssid != nullptr && WiFi.SSID() == ssid) {
+    return true;
+  }
+
+  if (connectTo(ssid, password, timeoutMs)) {
     return true;
   }
 
   // Some GR bodies are configured to use the SSID itself as the WPA password.
   // Keep this as a fallback only, so an intentionally empty password still gets
   // tried first for cameras running an open AP.
-  if (password[0] == '\0') {
-    return connectWithPassword(GR_WIFI_SSID, timeoutMs);
+  if ((password == nullptr || password[0] == '\0') && ssid != nullptr && ssid[0] != '\0') {
+    return connectTo(ssid, ssid, timeoutMs);
   }
 
   return false;
 }
-
 void GrWifi::loop() {
   const wl_status_t status = WiFi.status();
   _lastStatus = status;
@@ -79,7 +85,7 @@ void GrWifi::disconnect() {
 }
 
 String GrWifi::ssid() const {
-  return String(GR_WIFI_SSID);
+  return isConnected() ? WiFi.SSID() : String(GR_WIFI_SSID);
 }
 
 int32_t GrWifi::rssi() const {
@@ -95,13 +101,22 @@ String GrWifi::statusText() const {
 }
 
 bool GrWifi::connectWithPassword(const char* password, uint32_t timeoutMs) {
+  return connectTo(GR_WIFI_SSID, password, timeoutMs);
+}
+
+bool GrWifi::connectTo(const char* ssid, const char* password, uint32_t timeoutMs) {
+  if (ssid == nullptr || ssid[0] == '\0') {
+    _lastStatus = WL_NO_SSID_AVAIL;
+    return false;
+  }
+
   WiFi.disconnect(false, false);
   delay(100);
 
   if (password != nullptr && password[0] != '\0') {
-    WiFi.begin(GR_WIFI_SSID, password);
+    WiFi.begin(ssid, password);
   } else {
-    WiFi.begin(GR_WIFI_SSID);
+    WiFi.begin(ssid);
   }
 
   const uint32_t startMs = millis();

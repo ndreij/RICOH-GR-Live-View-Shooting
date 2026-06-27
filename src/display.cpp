@@ -47,7 +47,7 @@ void DisplayUi::showBoot(const char* message) {
     M5.Display.print(safeText(message, "Booting..."));
     M5.Display.setCursor(10, _height - 18);
     M5.Display.setTextColor(COLOR_YELLOW, COLOR_BLACK);
-    M5.Display.print("BtnB: liveview  BtnA: reserved");
+    M5.Display.print("G11: shutter  BtnB: liveview");
 }
 
 void DisplayUi::showStatus(const char* line1, const char* line2, const char* line3, float fps) {

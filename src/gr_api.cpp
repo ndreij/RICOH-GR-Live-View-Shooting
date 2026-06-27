@@ -1,4 +1,4 @@
-﻿#include "gr_api.h"
+#include "gr_api.h"
 
 #include "config.h"
 
@@ -112,6 +112,13 @@ bool extractJsonBool(const String& json, const char* key, bool& out) {
 }
 }  // namespace
 
+void GrApi::setEndpoint(const char* host, uint16_t port) {
+  if (host != nullptr && host[0] != '\0') {
+    _host = host;
+  }
+  _port = port;
+}
+
 bool GrApi::fetchProps(CameraProps& props, uint32_t timeoutMs) {
   props = CameraProps{};
 
@@ -120,7 +127,8 @@ bool GrApi::fetchProps(CameraProps& props, uint32_t timeoutMs) {
     return false;
   }
 
-  client.print(String("GET /v1/props HTTP/1.1\r\nHost: ") + GR_HOST + "\r\nConnection: close\r\n\r\n");
+  const String host = _host.length() ? _host : String(GR_HOST);
+  client.print(String("GET /v1/props HTTP/1.1\r\nHost: ") + host + "\r\nConnection: close\r\n\r\n");
 
   String headers;
   if (!readHttpHeaders(client, timeoutMs, headers)) {
@@ -172,6 +180,96 @@ bool GrApi::fetchProps(CameraProps& props, uint32_t timeoutMs) {
   return props.ok;
 }
 
+
+bool GrApi::fetchStatusDevice(String& body, uint32_t timeoutMs) {
+  int status = 0;
+  body = "";
+  return request("GET", "/v1/status/device", "", "", timeoutMs, &status, &body) && status == 200;
+}
+
+bool GrApi::request(const String& method,
+                    const String& path,
+                    const String& contentType,
+                    const String& body,
+                    uint32_t timeoutMs,
+                    int* httpStatus,
+                    String* responseBody) {
+  if (path.length() == 0 || path[0] != '/') {
+    setError("Invalid HTTP path");
+    return false;
+  }
+
+  WiFiClient client;
+  if (!connectClient(client, timeoutMs)) {
+    return false;
+  }
+
+  const String host = _host.length() ? _host : String(GR_HOST);
+  client.print(method + " " + path + " HTTP/1.1\r\n");
+  client.print(String("Host: ") + host + "\r\n");
+  client.print("Connection: close\r\n");
+  if (body.length() > 0) {
+    client.print(String("Content-Length: ") + body.length() + "\r\n");
+    if (contentType.length() > 0) {
+      client.print(String("Content-Type: ") + contentType + "\r\n");
+    }
+  }
+  client.print("\r\n");
+  if (body.length() > 0) {
+    client.print(body);
+  }
+
+  String headers;
+  if (!readHttpHeaders(client, timeoutMs, headers)) {
+    client.stop();
+    return false;
+  }
+
+  const int status = parseHttpStatus(headers);
+  if (httpStatus != nullptr) {
+    *httpStatus = status;
+  }
+
+  const int contentLength = parseContentLength(headers);
+  String response;
+  if (contentLength > 0) {
+    response.reserve(contentLength + 1);
+  }
+
+  const uint32_t startMs = millis();
+  while (client.connected() || client.available()) {
+    while (client.available()) {
+      response += static_cast<char>(client.read());
+      if (response.length() > kPropsBodyMaxBytes) {
+        client.stop();
+        setError("HTTP response body too large");
+        return false;
+      }
+      if (contentLength > 0 && response.length() >= contentLength) {
+        client.stop();
+        if (responseBody != nullptr) {
+          *responseBody = response;
+        }
+        _lastError = "";
+        return status >= 200 && status < 300;
+      }
+    }
+    if (millis() - startMs > timeoutMs) {
+      client.stop();
+      setError(String("Timed out reading HTTP response for ") + path);
+      return false;
+    }
+    yield();
+    delay(1);
+  }
+
+  client.stop();
+  if (responseBody != nullptr) {
+    *responseBody = response;
+  }
+  _lastError = "";
+  return status >= 200 && status < 300;
+}
 bool GrApi::openLiveView() {
   closeLiveView();
 
@@ -179,7 +277,8 @@ bool GrApi::openLiveView() {
     return false;
   }
 
-  _liveClient.print(String("GET /v1/liveview HTTP/1.1\r\nHost: ") + GR_HOST +
+  const String host = _host.length() ? _host : String(GR_HOST);
+  _liveClient.print(String("GET /v1/liveview HTTP/1.1\r\nHost: ") + host +
                     "\r\nConnection: keep-alive\r\n\r\n");
 
   String headers;
@@ -240,9 +339,11 @@ const String& GrApi::lastError() const {
 }
 
 bool GrApi::connectClient(WiFiClient& client, uint32_t timeoutMs) {
+  const String host = _host.length() ? _host : String(GR_HOST);
+  const uint16_t port = _port > 0 ? _port : GR_PORT;
   client.setTimeout(timeoutMs);
-  if (!client.connect(GR_HOST, GR_PORT, timeoutMs)) {
-    setError(String("Failed to connect to ") + GR_HOST + ":" + GR_PORT);
+  if (!client.connect(host.c_str(), port, timeoutMs)) {
+    setError(String("Failed to connect to ") + host + ":" + port);
     return false;
   }
   return true;

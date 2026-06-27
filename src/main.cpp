@@ -2,12 +2,16 @@
 #include <esp_heap_caps.h>
 
 #include "buttons.h"
+#include "camera_profile_store.h"
 #include "config.h"
 #include "display.h"
+#include "g11_button.h"
 #include "gr_api.h"
+#include "gr_shutter_service.h"
 #include "gr_wifi.h"
 #include "jpeg_decoder.h"
 #include "mjpeg_stream.h"
+#include "ricoh_ble_client.h"
 
 namespace {
 
@@ -16,7 +20,12 @@ GrApi grApi;
 MjpegStream mjpeg;
 DisplayUi ui;
 Buttons buttons;
+G11Button g11Button;
 JpegDecoder decoder;
+CameraProfileStore profileStore;
+CameraProfile cameraProfile;
+RicohBleClient ricohBle;
+GrShutterService shutterService;
 
 uint8_t* frameBuffer = nullptr;
 uint8_t streamReadBuffer[STREAM_READ_BUFFER_SIZE];
@@ -76,6 +85,76 @@ void closeLiveView(const char* reason) {
   mjpeg.reset();
 }
 
+void applyDefaultProfile() {
+  if (!profileStore.load(cameraProfile)) {
+    Serial.println("Profile: NVS open failed, using build defaults");
+    cameraProfile = CameraProfile{};
+  }
+
+  if (cameraProfile.wifi.ssid.isEmpty()) {
+    cameraProfile.wifi.ssid = GR_WIFI_SSID;
+  }
+  if (cameraProfile.wifi.passphrase.isEmpty()) {
+    cameraProfile.wifi.passphrase = GR_WIFI_PASSWORD;
+  }
+  if (cameraProfile.wifi.cameraIp.isEmpty()) {
+    cameraProfile.wifi.cameraIp = GR_HOST;
+  }
+  if (cameraProfile.shutter.timeoutMs == 0) {
+    cameraProfile.shutter.timeoutMs = SHUTTER_TIMEOUT_MS;
+  }
+  grApi.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
+
+  Serial.printf("Profile: camera='%s' ble='%s' wifi='%s' ip='%s' shutter=%s\n",
+                cameraProfile.cameraName.c_str(),
+                cameraProfile.bleAddress.c_str(),
+                cameraProfile.wifi.ssid.c_str(),
+                cameraProfile.wifi.cameraIp.c_str(),
+                cameraProfile.shutter.isValid() ? "configured" : "not-set");
+}
+
+void runBleDiscoveryAtBoot() {
+  showStatusIfChanged("Scanning GR BLE", cameraProfile.bleAddress, cameraProfile.wifi.ssid, "", true);
+  RicohBleDeviceInfo info = ricohBle.scanForCamera(cameraProfile.bleAddress, BLE_SCAN_SECONDS);
+  if (!info.found) {
+    showStatusIfChanged("BLE not found", "Continue WiFi", cameraProfile.wifi.ssid, "", true);
+    return;
+  }
+
+  cameraProfile.cameraName = info.name;
+  cameraProfile.bleAddress = info.address;
+  profileStore.saveBleIdentity(cameraProfile.cameraName, cameraProfile.bleAddress);
+
+  showStatusIfChanged("BLE camera found", info.name, info.address, "Discovering...", true);
+  if (ricohBle.connectAndDiscover(info, BLE_CONNECT_TIMEOUT_MS)) {
+    Serial.println("BLE Provision: Wi-Fi provisioning skeleton ready; secure characteristic map not configured yet");
+    showStatusIfChanged("BLE ready", info.name, info.address, "WiFi next", true);
+  } else {
+    showStatusIfChanged("BLE discover failed", ricohBle.lastError(), "WiFi next", "", true);
+  }
+  ricohBle.disconnect();
+}
+
+bool connectWifiFromProfile(bool forceStatus) {
+  grApi.setEndpoint(cameraProfile.wifi.cameraIp.c_str(), GR_PORT);
+  showStatusIfChanged("Connecting WiFi", cameraProfile.wifi.ssid, cameraProfile.wifi.cameraIp, "", forceStatus);
+  Serial.printf("WiFi: connecting to '%s' host=%s\n",
+                cameraProfile.wifi.ssid.c_str(),
+                cameraProfile.wifi.cameraIp.c_str());
+
+  if (grWifi.connect(cameraProfile.wifi.ssid.c_str(), cameraProfile.wifi.passphrase.c_str(), WIFI_CONNECT_TIMEOUT_MS)) {
+    showStatusIfChanged("WiFi connected", grWifi.localIPString(), cameraProfile.wifi.cameraIp, "", true);
+    Serial.printf("WiFi: connected ip=%s rssi=%ld\n",
+                  grWifi.localIPString().c_str(),
+                  static_cast<long>(grWifi.rssi()));
+    return true;
+  }
+
+  showStatusIfChanged("WiFi pending", grWifi.statusText(), cameraProfile.wifi.ssid, "", true);
+  Serial.printf("WiFi: connect failed status=%s\n", grWifi.statusText().c_str());
+  return false;
+}
+
 void refreshPropsIfDue(bool force = false) {
   const uint32_t now = millis();
   if (!force && (now - lastPropsAt) < PROPS_REFRESH_INTERVAL_MS) {
@@ -83,6 +162,15 @@ void refreshPropsIfDue(bool force = false) {
   }
   if (!grWifi.isConnected()) {
     return;
+  }
+
+  if (force) {
+    String statusBody;
+    if (grApi.fetchStatusDevice(statusBody, PROPS_TIMEOUT_MS)) {
+      Serial.printf("StatusDevice: %u bytes\n", static_cast<unsigned>(statusBody.length()));
+    } else {
+      Serial.printf("StatusDevice: failed: %s\n", grApi.lastError().c_str());
+    }
   }
 
   CameraProps nextProps;
@@ -186,11 +274,55 @@ void ensureLiveView() {
   }
 }
 
+void attemptReconnect(const char* reason) {
+  Serial.printf("Reconnect: %s\n", reason);
+  closeLiveView(reason);
+  liveviewEnabled = true;
+  grWifi.disconnect();
+  delay(100);
+  connectWifiFromProfile(true);
+  refreshPropsIfDue(true);
+  lastFrameAt = millis();
+}
+
+void triggerShutterFromG11() {
+  Serial.println("G11: short press shutter trigger");
+  if (!grWifi.isConnected()) {
+    showStatusIfChanged("G11 shutter", "WiFi not connected", grWifi.statusText(), "", true);
+    return;
+  }
+
+  if (!cameraProfile.shutter.isValid()) {
+    showStatusIfChanged("G11 shutter", "API NOT SET", "Configure endpoint", "", true);
+    Serial.println("Shutter: API NOT SET; no request sent");
+    return;
+  }
+
+  if (cameraProfile.shutter.closeLiveviewBeforeShoot) {
+    closeLiveView("shutter preflight");
+  }
+
+  showStatusIfChanged("G11 shutter", "Sending...", cameraProfile.shutter.path, "", true);
+  String message;
+  if (shutterService.shoot(grApi, cameraProfile.shutter, message)) {
+    showStatusIfChanged("G11 shutter", message, cameraProps.model, cameraProps.battery, true);
+    Serial.printf("Shutter: %s\n", message.c_str());
+  } else {
+    showStatusIfChanged("G11 shutter failed", message, cameraProfile.shutter.path, "", true);
+    Serial.printf("Shutter: failed: %s\n", message.c_str());
+  }
+
+  if (cameraProfile.shutter.closeLiveviewBeforeShoot && liveviewEnabled) {
+    closeLiveView("shutter resume");
+    lastFrameAt = millis();
+  }
+}
+
 void handleButtons() {
   const ButtonEvents events = buttons.poll();
   if (events.buttonA) {
     Serial.println("Button A reserved: shutter endpoint is not verified; no request sent.");
-    showStatusIfChanged("A reserved", "Shutter API unverified", cameraProps.model, cameraProps.battery, true);
+    showStatusIfChanged("A reserved", "Use G11 for V2", "API must be configured", "", true);
   }
 
   if (events.buttonB) {
@@ -202,6 +334,14 @@ void handleButtons() {
       closeLiveView("button B reconnect");
       showStatusIfChanged("Liveview enabled", "Reconnecting...", cameraProps.model, cameraProps.battery, true);
     }
+  }
+
+  const G11ButtonEvents g11 = g11Button.poll();
+  if (g11.longPress) {
+    showStatusIfChanged("G11 long press", "Reconnect WiFi/liveview", cameraProfile.wifi.ssid, "", true);
+    attemptReconnect("G11 long press");
+  } else if (g11.shortPress) {
+    triggerShutterFromG11();
   }
 }
 
@@ -226,12 +366,16 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println();
-  Serial.println("RICOH GR StickS3 Remote Viewfinder");
+  Serial.println("RICOH GR StickS3 Remote Viewfinder V2");
 
   ui.begin();
   buttons.begin();
+  g11Button.begin();
   decoder.begin();
-  ui.showBoot();
+  ui.showBoot("V2 booting...");
+
+  applyDefaultProfile();
+  runBleDiscoveryAtBoot();
 
   if (!psramFound()) {
     Serial.println("PSRAM not found; JPEG buffer allocation will likely fail.");
@@ -254,12 +398,8 @@ void setup() {
   mjpeg.begin(frameBuffer, FRAME_BUFFER_SIZE, onJpegFrame, nullptr);
 
   grWifi.begin();
-  showStatusIfChanged("Connecting WiFi", GR_WIFI_SSID, "", "", true);
-  if (grWifi.connect(WIFI_CONNECT_TIMEOUT_MS)) {
-    showStatusIfChanged("WiFi connected", grWifi.localIPString(), "", "", true);
+  if (connectWifiFromProfile(true)) {
     refreshPropsIfDue(true);
-  } else {
-    showStatusIfChanged("WiFi pending", grWifi.statusText(), "", "", true);
   }
 
   lastFrameAt = millis();

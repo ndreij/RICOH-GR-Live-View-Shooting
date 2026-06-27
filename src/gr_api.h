@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Arduino.h>
 #include <WiFiClient.h>
@@ -17,7 +17,16 @@ struct CameraProps {
 
 class GrApi {
 public:
+  void setEndpoint(const char* host, uint16_t port = 80);
   bool fetchProps(CameraProps& props, uint32_t timeoutMs);
+  bool fetchStatusDevice(String& body, uint32_t timeoutMs);
+  bool request(const String& method,
+               const String& path,
+               const String& contentType,
+               const String& body,
+               uint32_t timeoutMs,
+               int* httpStatus = nullptr,
+               String* responseBody = nullptr);
   bool openLiveView();
   void closeLiveView();
   bool isLiveViewOpen();
@@ -34,5 +43,7 @@ private:
 
   WiFiClient _liveClient;
   bool _liveViewOpen = false;
+  String _host;
+  uint16_t _port = 80;
   String _lastError;
 };
