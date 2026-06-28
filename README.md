@@ -15,9 +15,9 @@
 
 > 💡 **提示**：可在此处替换或放入您的硬件组装与实际工作照片。建议存放于项目 `docs/images/` 目录下。
 
-| 📸 硬件组装与外观 (Hardware Setup) | 🎬 腰平取景工作实拍 (In Action) |
+| 📸 手持遥控 (Remote Monitor & Shutter) | 🎬 腰平取景工作实拍 (In Action) |
 | :---: | :---: |
-| ![RICOH GR StickS3 Viewfinder Setup](docs/images/hardware_setup.jpg) | ![Waist Level Viewfinder Action](docs/images/liveview_action.jpg) |
+| ![RICOH GR StickS3 Remote Monitor & Shutter](docs/images/hardware_setup.jpg) | ![Waist Level Viewfinder Action](docs/images/liveview_action.jpg) |
 
 ---
 

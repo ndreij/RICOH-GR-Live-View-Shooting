@@ -15,9 +15,9 @@ An intelligent, wireless electronic viewfinder (EVF) and shutter remote control 
 
 > 💡 **Tip**: Replace or add photos of your hardware assembly and working setup here. We recommend saving them under the `docs/images/` directory in your repository.
 
-| 📸 Hardware Assembly & Setup | 🎬 Waist-Level Viewfinder In Action |
+| 📸 Remote Monitor & Shutter | 🎬 Waist-Level Viewfinder In Action |
 | :---: | :---: |
-| ![RICOH GR StickS3 Viewfinder Setup](docs/images/hardware_setup.jpg) | ![Waist Level Viewfinder Action](docs/images/liveview_action.jpg) |
+| ![RICOH GR StickS3 Remote Monitor & Shutter](docs/images/hardware_setup.jpg) | ![Waist Level Viewfinder Action](docs/images/liveview_action.jpg) |
 
 ---
 
