@@ -13,6 +13,9 @@ struct WifiCredential {
 struct CameraProfile {
   String cameraName;
   String bleAddress;
+  uint8_t bleAddressType = 0;
+  bool bleAddressTypeKnown = false;
+  bool bleBonded = false;
   WifiCredential wifi;
   uint32_t profileVersion = 3;
 };
@@ -23,6 +26,7 @@ public:
   bool load(CameraProfile& profile);
   bool save(const CameraProfile& profile);
   bool saveBleIdentity(const String& cameraName, const String& bleAddress);
+  bool saveBleIdentity(const String& cameraName, const String& bleAddress, uint8_t bleAddressType, bool bleBonded);
   bool clear();
 
 private:

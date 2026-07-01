@@ -24,6 +24,13 @@ struct RicohBleWifiCredentials {
   String bssid;
 };
 
+struct RicohBleConnectOptions {
+  uint32_t timeoutMs = 0;
+  uint32_t securityWaitMs = 0;
+  uint32_t preConnectDelayMs = 0;
+  bool exchangeMtu = true;
+};
+
 enum class RicohCameraPowerState {
   Unknown,
   On,
@@ -35,6 +42,8 @@ public:
   void begin();
   RicohBleDeviceInfo scanForCamera(const String& preferredAddress, const String& preferredName, uint32_t scanSeconds);
   bool connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs);
+  bool connect(const RicohBleDeviceInfo& info, const RicohBleConnectOptions& options);
+  bool isBonded(const RicohBleDeviceInfo& info);
   bool isConnected() const;
   bool shutterReady() const;
   bool shoot(bool autofocus = true);

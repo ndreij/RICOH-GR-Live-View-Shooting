@@ -169,11 +169,11 @@ BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning
 `CameraProfileStore` 基于 `Preferences`（NVS）。
 
 - namespace `"ricoh2"`，`profileVersion=3`。
-- 键：`proto_ver`/`cam_name`/`ble_addr`/`cam_ip`。
-- `load()`/`save()`/`saveBleIdentity(name, addr)`/`clear()`；`getStringIfPresent` 缺键返回空串。
+- 键：`proto_ver`/`cam_name`/`ble_addr`/`ble_addr_type`/`ble_bonded`/`cam_ip`。
+- `load()`/`save()`/`saveBleIdentity(name, addr[, type, bonded])`/`clear()`；`getStringIfPresent` 缺键返回空串。
 - **只持久化 BLE 身份 + 相机 IP**，不存 Wi-Fi 凭据（每次运行时 BLE 动态获取）；保护态不写 NVS。
 
-数据结构：`WifiCredential{ssid, passphrase, bssid, cameraIp}`、`CameraProfile{cameraName, bleAddress, wifi, profileVersion}`。
+数据结构：`WifiCredential{ssid, passphrase, bssid, cameraIp}`、`CameraProfile{cameraName, bleAddress, bleAddressType, bleAddressTypeKnown, bleBonded, wifi, profileVersion}`。
 
 ---
 

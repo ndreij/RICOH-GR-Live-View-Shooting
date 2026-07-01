@@ -4,6 +4,7 @@
 #include <esp_heap_caps.h>
 
 #include "buttons.h"
+#include "ble_reconnect_policy.h"
 #include "camera_identity.h"
 #include "camera_profile_store.h"
 #include "config.h"
@@ -419,6 +420,61 @@ bool hasStoredBleIdentity() {
   return cameraProfile.bleAddress.length() > 0;
 }
 
+bool hasDirectBleIdentity() {
+  return hasDirectBleReconnectIdentity(cameraProfile.bleAddress.c_str(), cameraProfile.bleAddressTypeKnown);
+}
+
+String displayBleName(const RicohBleDeviceInfo& info) {
+  String connectedName = info.name.length() > 0 ? info.name : preferredBleName();
+  if (connectedName.isEmpty()) {
+    connectedName = "RICOH GR";
+  }
+  return connectedName;
+}
+
+void saveConnectedBleIdentity(const String& connectedName, const RicohBleDeviceInfo& info) {
+  cameraProfile.cameraName = connectedName;
+  cameraProfile.bleAddress = info.address;
+  cameraProfile.bleAddressType = info.addressType;
+  cameraProfile.bleAddressTypeKnown = true;
+  cameraProfile.bleBonded = ricohBle.isBonded(info);
+  profileStore.saveBleIdentity(cameraProfile.cameraName,
+                               cameraProfile.bleAddress,
+                               cameraProfile.bleAddressType,
+                               cameraProfile.bleBonded);
+}
+
+bool connectStoredBleIdentityFast() {
+  if (!hasDirectBleIdentity()) {
+    return false;
+  }
+
+  RicohBleDeviceInfo info;
+  info.found = true;
+  info.name = cameraProfile.cameraName;
+  info.address = cameraProfile.bleAddress;
+  info.addressType = cameraProfile.bleAddressType;
+  info.connectable = true;
+
+  RicohBleConnectOptions options;
+  options.timeoutMs = BLE_FAST_CONNECT_TIMEOUT_MS;
+  options.securityWaitMs = cameraProfile.bleBonded ? RICOH_BLE_BONDED_SECURITY_WAIT_MS : RICOH_BLE_SECURITY_WAIT_MS;
+  options.preConnectDelayMs = 0;
+  options.exchangeMtu = false;
+
+  showStatusIfChanged("BLE fast connect", cameraProfile.cameraName, cameraProfile.bleAddress, "Direct reconnect", true);
+  if (!ricohBle.connect(info, options)) {
+    Serial.printf("BLE: fast direct connect failed: %s\n", ricohBle.lastError().c_str());
+    return false;
+  }
+
+  const String connectedName = displayBleName(info);
+  saveConnectedBleIdentity(connectedName, info);
+  showStatusIfChanged("BLE link ready", cameraProfile.cameraName, info.address, "WiFi via BLE", true);
+  setCameraFlowState(CameraFlowState::BleReady, "BLE direct connected");
+  return true;
+}
+
 bool runBleDiscoveryAtBoot() {
   if (cameraSleepGuardBlocksFlow("BLE discovery")) {
     return false;
@@ -430,6 +486,12 @@ bool runBleDiscoveryAtBoot() {
 
   if (firstBootPairing) {
     Serial.printf("BLE: no stored identity; pairing scan up to %u rounds\n", static_cast<unsigned>(attempts));
+  } else if (connectStoredBleIdentityFast()) {
+    return true;
+  } else if (consumeCameraPowerOffDisconnect("BLE fast connect failed")) {
+    return false;
+  } else {
+    ricohBle.disconnect();
   }
 
   for (uint8_t attempt = 1; attempt <= attempts; ++attempt) {
@@ -444,16 +506,11 @@ bool runBleDiscoveryAtBoot() {
     if (!info.found) {
       showStatusIfChanged("BLE not found", "Retrying...", "", "", true);
     } else {
-      String connectedName = info.name.length() > 0 ? info.name : preferredBleName();
-      if (connectedName.isEmpty()) {
-        connectedName = "RICOH GR";
-      }
+      const String connectedName = displayBleName(info);
 
       showStatusIfChanged("BLE camera found", connectedName, info.address, "Connecting...", true);
       if (ricohBle.connect(info, BLE_CONNECT_TIMEOUT_MS)) {
-        cameraProfile.cameraName = connectedName;
-        cameraProfile.bleAddress = info.address;
-        profileStore.saveBleIdentity(cameraProfile.cameraName, cameraProfile.bleAddress);
+        saveConnectedBleIdentity(connectedName, info);
         showStatusIfChanged("BLE link ready", cameraProfile.cameraName, info.address, "WiFi via BLE", true);
         setCameraFlowState(CameraFlowState::BleReady, "BLE connected");
         return true;

@@ -709,6 +709,15 @@ RicohBleDeviceInfo RicohBleClient::scanForCamera(const String& preferredAddress,
 }
 
 bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs) {
+  RicohBleConnectOptions options;
+  options.timeoutMs = timeoutMs;
+  options.securityWaitMs = RICOH_BLE_SECURITY_WAIT_MS;
+  options.preConnectDelayMs = BLE_SCAN_TO_CONNECT_DELAY_MS;
+  options.exchangeMtu = true;
+  return connect(info, options);
+}
+
+bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConnectOptions& options) {
   begin();
   disconnect();
   if (!info.found || info.address.length() == 0) {
@@ -716,8 +725,10 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs)
     return false;
   }
 
-  delay(BLE_SCAN_TO_CONNECT_DELAY_MS);
-  yield();
+  if (options.preConnectDelayMs > 0) {
+    delay(options.preConnectDelayMs);
+    yield();
+  }
 
   NimBLEAddress peer(std::string(info.address.c_str()), info.addressType);
   NimBLEClient* client = NimBLEDevice::createClient();
@@ -728,14 +739,14 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs)
 
   _client = client;
   client->setClientCallbacks(&g_callbacks, false);
-  client->setConnectTimeout(timeoutMs);
+  client->setConnectTimeout(options.timeoutMs);
   client->setConnectRetries(1);
   client->setConnectionParams(BLE_GAP_INITIAL_CONN_ITVL_MIN,
                               BLE_GAP_INITIAL_CONN_ITVL_MAX,
                               1,
                               2 * BLE_GAP_INITIAL_SUPERVISION_TIMEOUT);
 
-  if (!client->connect(peer, true, false, true)) {
+  if (!client->connect(peer, true, false, options.exchangeMtu)) {
     const int err = client->getLastError();
     _lastError = String("NimBLE connect failed err=") + String(err);
     NimBLEDevice::deleteClient(client);
@@ -756,7 +767,8 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs)
   }
 
   String securityWaitError;
-  if (!waitForEncryptedConnection(client, RICOH_BLE_SECURITY_WAIT_MS, securityWaitError)) {
+  const uint32_t securityWaitMs = options.securityWaitMs > 0 ? options.securityWaitMs : RICOH_BLE_SECURITY_WAIT_MS;
+  if (!waitForEncryptedConnection(client, securityWaitMs, securityWaitError)) {
     _lastError = securityWaitError;
     disconnect();
     return false;
@@ -765,6 +777,16 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs)
   _lastError = "";
   Serial.println("BLE: connected secure");
   return true;
+}
+
+bool RicohBleClient::isBonded(const RicohBleDeviceInfo& info) {
+  begin();
+  if (info.address.length() == 0) {
+    return false;
+  }
+
+  NimBLEAddress peer(std::string(info.address.c_str()), info.addressType);
+  return NimBLEDevice::isBonded(peer);
 }
 
 bool RicohBleClient::isConnected() const {

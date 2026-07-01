@@ -91,7 +91,7 @@ flowchart TD
 3. **电源门控** —— 开 Wi-Fi 前必须 `readPowerState()` 确认相机 `On`；`RICOH_BLE_REQUIRE_POWER_ON_BEFORE_WIFI=true`。手动唤醒走 `cameraManualWakeOverride` 旁路。
 4. **帧缓冲在 PSRAM** —— `FRAME_BUFFER_SIZE=256KB`，优先 `MALLOC_CAP_SPIRAM`，回退内部 RAM；无 PSRAM 直接报错停机。
 5. **JPEG 缩放** —— `config.h` 设 `JPEG_SCALE_POLICY=JPEG_SCALE_HALF`（覆盖 `display.h`/`jpeg_decoder.h` 的 `QUARTER` 默认）。
-6. **NVS schema** —— namespace `ricoh2`，`proto_ver`（当前 3）/`cam_name`/`ble_addr`/`cam_ip`。保护态**不写 NVS**，重启即重新扫描。
+6. **NVS schema** —— namespace `ricoh2`，`proto_ver`（当前 3）/`cam_name`/`ble_addr`/`ble_addr_type`/`ble_bonded`/`cam_ip`。`ble_addr_type` 存在时可跳过扫描进行 BLE 快速直连；保护态**不写 NVS**，重启即重新扫描。
 7. **按键 = 仅 `M5.BtnA`** —— 见下方「文档漂移」。
 
 ## 按键实现说明
@@ -103,7 +103,9 @@ flowchart TD
 | 参数 | 默认 | 位置 | 说明 |
 | --- | ---: | --- | --- |
 | `BLE_SCAN_SECONDS` | 2 | config.h | 单轮 BLE 扫描时长 |
+| `BLE_FAST_CONNECT_TIMEOUT_MS` | 3000 | config.h | 已保存 BLE 地址/地址类型时的 direct reconnect 超时 |
 | `BLE_CONNECT_ATTEMPTS` | 12 | config.h | 有身份时重连尝试次数 |
+| `RICOH_BLE_BONDED_SECURITY_WAIT_MS` | 1500 | config.h | 已 bonded 相机重连时的加密恢复等待 |
 | `FIRST_BOOT_BLE_PAIRING_ATTEMPTS` | 12 | config.h | 无 NVS 身份时配对扫描次数 |
 | `CAMERA_POWER_OFF_COOLDOWN_MS` | 15000 | config.h | 关机断连冷却 |
 | `BLE_MANUAL_WAKE_REINIT_SETTLE_MS` | 3000 | config.h | 手动唤醒 BLE 栈重建等待 |

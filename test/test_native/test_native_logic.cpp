@@ -5,6 +5,7 @@
 
 #include <unity.h>
 
+#include "ble_reconnect_policy.h"
 #include "camera_identity.h"
 #include "mjpeg_stream.h"
 
@@ -140,6 +141,13 @@ void testRejectsNonRicohWifiSsidForBleName() {
   assertDerivedBleName("XGR_H264456", "");
 }
 
+void testRequiresBleAddressAndAddressTypeForDirectReconnect() {
+  TEST_ASSERT_TRUE(hasDirectBleReconnectIdentity("aa:bb:cc:dd:ee:ff", true));
+  TEST_ASSERT_FALSE(hasDirectBleReconnectIdentity("aa:bb:cc:dd:ee:ff", false));
+  TEST_ASSERT_FALSE(hasDirectBleReconnectIdentity("", true));
+  TEST_ASSERT_FALSE(hasDirectBleReconnectIdentity(nullptr, true));
+}
+
 }  // namespace
 
 int main() {
@@ -152,5 +160,6 @@ int main() {
   RUN_TEST(testDerivesBleNameFromRicohWifiSsid);
   RUN_TEST(testLeavesNonNumericRicohWifiSsidUnchanged);
   RUN_TEST(testRejectsNonRicohWifiSsidForBleName);
+  RUN_TEST(testRequiresBleAddressAndAddressTypeForDirectReconnect);
   return UNITY_END();
 }

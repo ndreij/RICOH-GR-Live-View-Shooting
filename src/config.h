@@ -31,6 +31,7 @@ constexpr uint32_t PROPS_REFRESH_INTERVAL_MS = 60000;
 #endif
 
 constexpr uint32_t BLE_SCAN_SECONDS = 2;
+constexpr uint32_t BLE_FAST_CONNECT_TIMEOUT_MS = 3000;
 constexpr uint32_t BLE_CONNECT_TIMEOUT_MS = 8000;
 constexpr uint8_t BLE_CONNECT_ATTEMPTS = 12;
 constexpr uint32_t BLE_CONNECT_RETRY_DELAY_MS = 1000;
@@ -39,6 +40,7 @@ constexpr uint8_t BLE_STACK_RESET_AFTER_FAILURES = 2;
 constexpr uint32_t BLE_STACK_RESET_DELAY_MS = 1500;
 constexpr uint32_t BLE_RECOVERY_STACK_RESET_GRACE_MS = 700;
 constexpr uint32_t BLE_DISCONNECT_WAIT_MS = 1200;
+constexpr uint32_t RICOH_BLE_BONDED_SECURITY_WAIT_MS = 1500;
 constexpr uint32_t RICOH_BLE_SECURITY_WAIT_MS = 7000;
 constexpr uint8_t FIRST_BOOT_BLE_PAIRING_ATTEMPTS = 12;
 constexpr uint32_t SERIAL_BOOT_WAIT_MS = 500;
