@@ -13,6 +13,8 @@
 #include <NimBLEClient.h>
 #include <NimBLEConnInfo.h>
 #include <NimBLEDevice.h>
+#include <NimBLERemoteCharacteristic.h>
+#include <NimBLERemoteService.h>
 #include <NimBLEScan.h>
 #include <NimBLEUUID.h>
 #include <esp_heap_caps.h>
@@ -1076,44 +1078,55 @@ bool RicohBleClient::shoot(bool autofocus) {
     return false;
   }
 
-  const uint8_t focusPayload[] = {0x01};
-  const uint8_t releasePayload[] = {0x00};
-  const uint8_t shootPayload[] = {static_cast<uint8_t>(autofocus ? 0x02 : 0x01)};
-  bool needsRelease = false;
+  // RICOH GR does not use the generic 1-byte half-press/full-press/release
+  // shutter handle.  Match furble's proven implementation: set immediate
+  // shooting flavor, then send a single OperationRequest START command with
+  // parameter AF (0x01) or NO_AF (0x00).  There is no release write for this
+  // protocol path.
+  constexpr uint8_t kShootingFlavorImmediate = 0x00;
+  constexpr uint8_t kOperationStart = 0x01;
+  constexpr uint8_t kOperationParamNoAf = 0x00;
+  constexpr uint8_t kOperationParamAf = 0x01;
 
-  auto writeShutter = [&](const uint8_t* payload, size_t length, String& err) -> bool {
-    return writeHandleWithResponse(client, RICOH_BLE_GR4_SHUTTER_HANDLE, payload, length, err);
+  NimBLERemoteService* shootingService = client->getService(NimBLEUUID(RICOH_BLE_SHOOTING_SERVICE_UUID));
+  if (shootingService == nullptr) {
+    _lastError = "BLE shooting service unavailable";
+    return false;
+  }
+
+  NimBLERemoteCharacteristic* shootingFlavor =
+      shootingService->getCharacteristic(NimBLEUUID(RICOH_BLE_SHOOTING_FLAVOR_UUID));
+  if (shootingFlavor == nullptr || !shootingFlavor->canWrite()) {
+    _lastError = "BLE ShootingFlavor unavailable";
+    return false;
+  }
+
+  NimBLERemoteCharacteristic* operationRequest =
+      shootingService->getCharacteristic(NimBLEUUID(RICOH_BLE_OPERATION_REQUEST_UUID));
+  if (operationRequest == nullptr || !operationRequest->canWrite()) {
+    _lastError = "BLE OperationRequest unavailable";
+    return false;
+  }
+
+  const uint8_t flavorPayload = kShootingFlavorImmediate;
+  if (!shootingFlavor->writeValue(&flavorPayload, sizeof(flavorPayload), true)) {
+    _lastError = "BLE ShootingFlavor write failed";
+    return false;
+  }
+
+  const uint8_t operationPayload[] = {
+      kOperationStart,
+      static_cast<uint8_t>(autofocus ? kOperationParamAf : kOperationParamNoAf),
   };
-
-  String err;
-  if (!writeShutter(focusPayload, sizeof(focusPayload), err)) {
-    _lastError = String("BLE shutter focus failed: ") + err;
-    return false;
-  }
-  needsRelease = true;
-  delay(80);
-  yield();
-
-  if (!writeShutter(shootPayload, sizeof(shootPayload), err)) {
-    String releaseErr;
-    if (needsRelease && isConnected()) {
-      writeShutter(releasePayload, sizeof(releasePayload), releaseErr);
-    }
-    _lastError = String("BLE shutter shoot failed: ") + err;
-    if (releaseErr.length() > 0) {
-      _lastError += String("; release failed: ") + releaseErr;
-    }
-    return false;
-  }
-  delay(80);
-  yield();
-
-  if (!writeShutter(releasePayload, sizeof(releasePayload), err)) {
-    _lastError = String("BLE shutter release failed: ") + err;
+  if (!operationRequest->writeValue(operationPayload, sizeof(operationPayload), true)) {
+    _lastError = "BLE OperationRequest write failed";
     return false;
   }
 
   _lastError = "";
+  Serial.printf("BLE: Ricoh shutter OperationRequest START param=%u autofocus=%d\n",
+                static_cast<unsigned>(operationPayload[1]),
+                autofocus ? 1 : 0);
   return true;
 }
 
