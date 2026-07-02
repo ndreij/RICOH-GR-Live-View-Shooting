@@ -51,6 +51,24 @@ bool isPowerOffDisconnectReason(int reason) {
          reason == RICOH_BLE_DISCONNECT_REMOTE_POWER_OFF;
 }
 
+const char* ricohOperationModeName(RicohCameraOperationMode mode) {
+  switch (mode) {
+    case RicohCameraOperationMode::Capture:
+      return "CAPTURE";
+    case RicohCameraOperationMode::Playback:
+      return "PLAYBACK";
+    case RicohCameraOperationMode::BleStartup:
+      return "BLE_STARTUP";
+    case RicohCameraOperationMode::Other:
+      return "OTHER";
+    case RicohCameraOperationMode::PowerOffTransfer:
+      return "POWER_OFF_TRANSFER";
+    case RicohCameraOperationMode::Unknown:
+      return "UNKNOWN";
+  }
+  return "UNKNOWN";
+}
+
 int ricohGapEventHandler(ble_gap_event* event, void*) {
   if (event == nullptr || event->type != BLE_GAP_EVENT_NOTIFY_RX ||
       event->notify_rx.attr_handle != RICOH_BLE_GR4_POWER_STATE_HANDLE ||
@@ -1035,6 +1053,60 @@ bool RicohBleClient::readPowerState(RicohCameraPowerState& state) {
   }
 
   _lastError = String("BLE power unknown value=0x") + String(code, HEX);
+  return true;
+}
+
+bool RicohBleClient::readOperationMode(RicohCameraOperationMode& mode) {
+  NimBLEClient* client = static_cast<NimBLEClient*>(_client);
+  mode = RicohCameraOperationMode::Unknown;
+  if (!isConnected() || client == nullptr) {
+    _lastError = "BLE not connected";
+    return false;
+  }
+
+  NimBLERemoteService* cameraService = client->getService(NimBLEUUID(RICOH_BLE_CAMERA_SERVICE_UUID));
+  if (cameraService == nullptr) {
+    _lastError = "BLE camera service unavailable";
+    return false;
+  }
+
+  NimBLERemoteCharacteristic* operationMode =
+      cameraService->getCharacteristic(NimBLEUUID(RICOH_BLE_OPERATION_MODE_UUID));
+  if (operationMode == nullptr || !operationMode->canRead()) {
+    _lastError = "BLE operation mode unavailable";
+    return false;
+  }
+
+  NimBLEAttValue value = operationMode->readValue();
+  if (value.length() == 0) {
+    _lastError = "BLE operation mode read empty";
+    return false;
+  }
+
+  const uint8_t code = value.data()[0];
+  switch (code) {
+    case 0x00:
+      mode = RicohCameraOperationMode::Capture;
+      break;
+    case 0x01:
+      mode = RicohCameraOperationMode::Playback;
+      break;
+    case 0x02:
+      mode = RicohCameraOperationMode::BleStartup;
+      break;
+    case 0x03:
+      mode = RicohCameraOperationMode::Other;
+      break;
+    case 0x04:
+      mode = RicohCameraOperationMode::PowerOffTransfer;
+      break;
+    default:
+      mode = RicohCameraOperationMode::Unknown;
+      break;
+  }
+
+  Serial.printf("BLE: operation mode read value=0x%02X state=%s\n", code, ricohOperationModeName(mode));
+  _lastError = "";
   return true;
 }
 

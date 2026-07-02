@@ -39,6 +39,15 @@ enum class RicohCameraPowerState {
   OffOrShuttingDown,
 };
 
+enum class RicohCameraOperationMode {
+  Unknown,
+  Capture,
+  Playback,
+  BleStartup,
+  Other,
+  PowerOffTransfer,
+};
+
 class RicohBleClient {
 public:
   void begin();
@@ -51,6 +60,7 @@ public:
   bool shoot(bool autofocus = true);
   bool openWifi();
   bool readPowerState(RicohCameraPowerState& state);
+  bool readOperationMode(RicohCameraOperationMode& mode);
   bool enablePowerStateNotify();
   bool consumePowerOffNotification();
   bool waitForWifiCredentials(RicohBleWifiCredentials& credentials, uint32_t timeoutMs);
