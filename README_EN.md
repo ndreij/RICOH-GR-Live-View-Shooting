@@ -2,122 +2,192 @@
 
 [![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thinkerzhang)
 
-Firmware for running RICOH GR wireless live-view and remote shutter on the M5Stack StickS3.
+Firmware for running RICOH GR wireless live view and BLE remote shutter on the M5Stack StickS3.
 
-It identifies and connects to the camera using **BLE as the only online entry point**, temporarily enables the camera's Wi-Fi over BLE, reads the dynamic Wi-Fi credentials returned by the camera, and finally displays the live preview via HTTP LiveView.
+The firmware uses **BLE as the entry point for discovery, pairing, wake control, and shutter control**. It connects securely to the camera over BLE, checks whether the camera is really in an active mode before sending Wi-Fi ON, reads the dynamic WLAN parameters returned by the camera, then opens the RICOH HTTP LiveView stream and displays MJPEG frames on the StickS3 screen.
 
 [中文 README](README.md)
 
 ---
 
-## Current Stable Features
+## Current Capabilities
 
-- **BLE-First Connection Flow**: Uses the saved BLE address and address type for a fast direct reconnect when the NVS camera profile is complete, then falls back to scanning for `GR_` / RICOH devices.
-- **Dynamic Wi-Fi Credentials**: No longer depends on a fixed SSID/passphrase in `platformio.ini`. After the camera's Wi-Fi is woken up, the SSID, password, and BSSID are read via BLE.
-- **LiveView Real-Time Preview**: Connects to the camera's Wi-Fi, accesses the RICOH HTTP API, opens `/v1/liveview`, and displays the MJPEG video stream on the StickS3 screen.
-- **Button A Shutter**: Triggers the BLE shutter sequence when the StickS3 built-in Button A is pressed.
-- **Camera Power-Off Guard**: Enters a guard state when a proactive BLE disconnection from the camera is detected, preventing the StickS3 from waking the camera again during its shutdown process.
-- **Manual Wake & Reconnection**: After the cooldown period of the guard state ends, pressing Button A will re-wake and reconnect to the camera.
-- **Autoconnect on StickS3 Reboot**: The guard state is only kept in RAM. If the StickS3 itself reboots, it will start over from the BLE scan and autoconnect to the camera.
+- **BLE-first connection**: On first use, scans for `GR_` / RICOH devices and performs secure pairing. On later boots, fast direct reconnect uses the saved BLE address, address type, and bonded state from NVS before falling back to scanning.
+- **Power-off / standby guard**: After a StickS3 reboot, the firmware may still connect to a camera that is in BLE standby. It reads both RICOH Power State and Operation Mode before Wi-Fi ON; `BLE_STARTUP` and `POWER_OFF_TRANSFER` block automatic Wi-Fi wake.
+- **Dynamic Wi-Fi credentials**: No fixed SSID/passphrase is required in `platformio.ini`. After Wi-Fi is enabled, SSID, passphrase, frequency/channel, and BSSID are read over BLE.
+- **Wi-Fi credential cache**: Successful Wi-Fi parameters are cached and bound to the BLE address. The next boot tries cached channel/BSSID with a short timeout and falls back to fresh BLE parameters if the camera WLAN settings changed.
+- **LiveView preview**: Connects to the camera Wi-Fi AP, opens `/v1/liveview`, parses MJPEG, and renders frames on the StickS3 display. Camera properties are refreshed periodically over HTTP.
+- **RICOH shutter protocol**: Button A writes `ShootingFlavor=IMMEDIATE` and `OperationRequest={START, AF}` through the RICOH Shooting Service. The old 1-byte focus/shoot/release handle sequence is no longer used.
+- **Manual wake and reconnect**: Once `CAMERA_SLEEP_GUARD` is active, the firmware will not wake the camera automatically. After cooldown, Button A manually rebuilds the NimBLE stack and reconnects.
+- **Drop recovery**: LiveView, Wi-Fi, and BLE failures are recovered according to the current flow state, preferring BLE_READY retries before a full scan when possible.
 
 ---
 
-## Workflow
+## Camera Compatibility Status
+
+The current code and protocol parameters have been verified on **RICOH GR IV HDF** only.
+
+| Camera | Status | Notes |
+| --- | --- | --- |
+| RICOH GR IV HDF | Verified working | Primary development and test camera |
+| RICOH GR IV series | Expected to work | Same-generation BLE / Wi-Fi / HTTP LiveView protocol is expected to be compatible, but real-device confirmation is still recommended |
+| RICOH GR III / GR IIIx | Not currently supported | Protocol and behavior differ from the current GR IV implementation |
+| RICOH GR II | Not currently supported | Does not support the GR IV BLE-first flow used by this firmware |
+
+All BLE UUIDs, handles, Operation Mode behavior, and Shooting Service flow documented below are based on GR IV HDF testing.
+
+---
+
+## Actual Boot and Connection Flow
 
 ```text
-StickS3 Power On / Reboot
-  ↓
-Initialize screen, buttons, NVS, BLE, Wi-Fi
-  ↓
-Read Camera Profile (BLE address, address type, bond state, camera name, camera IP)
-  ↓
-Fast direct BLE reconnect when profile is complete; otherwise scan for GR / RICOH BLE devices
-  ↓
-Connect to camera BLE and complete secure pairing / encryption
-  ↓
-Write WLAN ON command over BLE (handle 0x0135, value 0x01)
-  ↓
-Read Wi-Fi parameters returned from camera over BLE
-  ↓
-Connect to camera Wi-Fi AP
-  ↓
-HTTP Probe camera status
-  ↓
-Open LiveView, read MJPEG stream, decode and display
+StickS3 power on / reboot
+  -> Initialize display, M5PM1 power, buttons, JPEG decoder, Wi-Fi STA, NVS profile
+  -> runCameraFlowOnce()
+  -> BLE_SCAN
+     -> Saved BLE identity: fast direct reconnect to saved address
+     -> No saved identity or direct reconnect failed: scan GR / RICOH advertisements
+  -> Secure BLE connection / encryption / save camera identity
+  -> BLE_READY
+  -> Read Power State (0x00EB)
+  -> Read Operation Mode (1452335A-EC7F-4877-B8AB-0F72E18BB295)
+     -> CAPTURE / PLAYBACK / OTHER: continue
+     -> BLE_STARTUP / POWER_OFF_TRANSFER: enter CAMERA_SLEEP_GUARD, do not send Wi-Fi ON
+  -> Write WLAN ON (0x0135 = 0x01)
+  -> Try cached Wi-Fi parameters first with a short timeout
+     -> Success: open LiveView immediately, refresh BLE Wi-Fi cache later
+     -> Failure: read fresh BLE Wi-Fi parameters and reconnect
+  -> Connect to camera Wi-Fi AP
+  -> Open /v1/liveview
+  -> LIVEVIEW_RUNNING
 ```
 
-### Camera Power-Off Guard Flow
+### Why Operation Mode Is Checked
+
+A RICOH GR can still accept BLE connections while it appears powered off or in standby, and Power State can read back as `0x01`. If the firmware only trusts Power State, it may send Wi-Fi ON and wake the camera unintentionally.
+
+The current firmware reads Operation Mode before sending Wi-Fi ON:
+
+- `CAPTURE` / `PLAYBACK`: camera is in an active usable state, Wi-Fi ON is allowed.
+- `BLE_STARTUP` / `POWER_OFF_TRANSFER`: camera is in a standby or power-off transfer related BLE mode, automatic flow enters `CAMERA_SLEEP_GUARD`.
+- Pressing Button A from the guard state sets a manual wake override and allows an intentional wake.
+
+---
+
+## Camera Power-Off Guard Flow
 
 ```text
-LiveView Running
-  ↓
-Camera powers off / Proactive BLE disconnection
-  ↓
-Receive BLE disconnect reason 531 / 533
-  ↓
-Enter CAMERA_SLEEP_GUARD
-  ↓
-BLE scanning, BLE reconnection, and Wi-Fi activation are forbidden during 15-second cooldown
-  ↓
-Do not automatically wake the camera after cooldown ends
-  ↓
-User presses Button A
-  ↓
-Rebuild NimBLE stack, scan again, and reconnect to the camera
+LiveView running / StickS3 reboot connects to a standby camera
+  -> BLE disconnect reason 0x213 / 0x215, or Operation Mode is BLE_STARTUP / POWER_OFF_TRANSFER
+  -> Close LiveView, disconnect Wi-Fi and BLE
+  -> Enter CAMERA_SLEEP_GUARD
+  -> During 15-second cooldown, automatic scan/reconnect/Wi-Fi ON is blocked
+  -> After cooldown, still do not wake the camera automatically
+  -> User presses Button A
+  -> Clear guard, rebuild NimBLE stack, scan/connect/open Wi-Fi again
 ```
 
-This prevents the StickS3 from sending a Wi-Fi wake command while the camera is shutting down or advertising in low-power standby.
+Typical log:
+
+```text
+BLE: operation mode read value=0x02 state=BLE_STARTUP
+WiFi blocked: camera operation mode=BLE_STARTUP while power=ON source=WiFi open
+Flow: BLE_READY -> CAMERA_SLEEP_GUARD (BLE operation mode standby)
+BLE guard: remote disconnect reason=533; auto wake paused for 15s, then manual wake required
+```
+
+In this case the firmware should not print:
+
+```text
+BLE: Wi-Fi open requested
+```
+
+unless the user presses Button A for manual wake.
 
 ---
 
 ## Controls
 
-| Control | Function |
+| Control | Behavior |
 | --- | --- |
-| Button A | Triggers BLE shutter during LiveView; acts as manual wake / reconnect button in camera guard state |
+| Button A | Triggers BLE AF shutter during normal LiveView; acts as manual wake / reconnect while in `CAMERA_SLEEP_GUARD` |
+| Long power key press | Shuts down the StickS3: closes LiveView, disconnects Wi-Fi/BLE, then powers off through M5PM1 / M5Unified |
 
-Button A is the StickS3 built-in button (`M5.BtnA`); the firmware polls `wasPressed()` in `loop()`.
-
----
-
-## RICOH BLE GATT Handles
-
-| Feature | Handle | Operation | Description |
-| --- | ---: | --- | --- |
-| Wi-Fi Enable | `0x0135` | Write | Write `0x01` to wake camera Wi-Fi |
-| Wi-Fi SSID | `0x0138` | Read | Read camera AP SSID |
-| Wi-Fi Passphrase | `0x013A` | Read | Read camera AP password |
-| Wi-Fi BSSID | `0x0140` | Read | Read camera AP MAC address |
-| Shutter Control | `0x0099` | Write | `0x01` Focus, `0x02` Shoot, `0x00` Release |
+Button A is polled with `M5.BtnA.wasPressed()`. The power key uses both M5Unified hold events and M5PM1 state polling for better reliability.
 
 ---
 
-## Hardware Requirements
+## RICOH BLE / HTTP Protocol Points
 
-- M5Stack StickS3
-- RICOH GR III / GR IIIx / GR IV or any camera model compatible with the RICOH BLE control protocol
+### BLE Services and Characteristics
+
+The protocol points below are based on GR IV HDF testing; they do not apply to GR III / GR II.
+
+| Feature | UUID / Handle | Operation | Description |
+| --- | --- | --- | --- |
+| Camera Service | `4B445988-CAA0-4DD3-941D-37B4F52ACA86` | Service | Service containing Power / Operation Mode |
+| Power State | handle `0x00EB` | Read / Notify | `0x01` means BLE-controllable; `0x00` means powered off or shutting down |
+| Power State CCCD | handle `0x00EC` | Write | Write `0x01 0x00` to subscribe to power notifications |
+| Operation Mode | `1452335A-EC7F-4877-B8AB-0F72E18BB295` | Read | Distinguishes `CAPTURE`, `PLAYBACK`, `BLE_STARTUP`, and `POWER_OFF_TRANSFER` |
+| WLAN Power | handle `0x0135` | Write | Write `0x01` to request camera Wi-Fi ON |
+| WLAN SSID | handle `0x0138` | Read | Camera AP SSID |
+| WLAN Passphrase | handle `0x013A` | Read | Camera AP password |
+| WLAN Security | handle `0x013C` | Read | Security type |
+| WLAN Frequency | handle `0x013E` | Read | Frequency/channel hint |
+| WLAN BSSID | handle `0x0140` | Read | AP BSSID when provided; actual connected BSSID is also learned via `WiFi.BSSIDstr()` |
+| Shooting Service | `9F00F387-8345-4BBC-8B92-B87B52E3091A` | Service | RICOH capture control service |
+| Shooting Flavor | `B29E6DE3-1AEC-48C1-9D05-02CEA57CE664` | Write | Button A writes `0x00` (Immediate) before capture |
+| Operation Request | `559644B8-E0BC-4011-929B-5CF9199851E7` | Write | AF capture writes `{0x01, 0x01}`; no-AF capture writes `{0x01, 0x00}` |
+
+### HTTP API
+
+- Default camera address: `192.168.0.1`
+- LiveView: `/v1/liveview`
+- Camera properties: `/v1/props`
 
 ---
 
-## Build and Flash
+## Wi-Fi Cache Strategy
+
+The cache is stored in NVS and bound to the current BLE address:
+
+- SSID / passphrase
+- BSSID
+- frequency / channel
+- camera IP
+
+Connection strategy:
+
+1. Cached parameters are used only after BLE is connected and Wi-Fi ON has been requested.
+2. With a valid cache, the firmware waits `WIFI_CACHED_CONNECT_GRACE_MS`, then tries a short `WIFI_CACHED_CONNECT_TIMEOUT_MS` connection using channel/BSSID hints.
+3. A cache failure does not block startup; the firmware immediately reads fresh Wi-Fi parameters over BLE.
+4. After a successful connection, the actual `WiFi.BSSIDstr()` is learned and saved.
+5. When the cached path succeeds, BLE Wi-Fi parameters are refreshed later so the next boot will not keep stale WLAN settings.
+
+---
+
+## Build, Flash, and Monitor
 
 ```bash
-# Compile
+# Build the default m5stack-sticks3 environment
 platformio run
 
 # Upload
-platformio run -t upload
+platformio run --target upload
+
+# Upload to a specific serial port example
+platformio run --target upload --upload-port COM6
 
 # Monitor serial logs
-platformio device monitor
+platformio device monitor --port COM6 --baud 115200 --filter time
 
-# Run host-side unit tests (no camera or StickS3 required)
+# Run host-side native tests (no camera or StickS3 required)
 platformio test -e native
 ```
 
 Serial baud rate: `115200`
 
-The current native tests cover the MJPEG frame-splitting edge cases in `MjpegStream` and the RICOH Wi-Fi SSID to BLE name derivation logic.
+The default PlatformIO environment is `m5stack-sticks3`. The target is ESP32-S3 DevKitC-1 N8 / M5Stack StickS3 with PSRAM-related build flags enabled.
 
 ---
 
@@ -128,69 +198,96 @@ Main configuration files:
 - `src/config.h`
 - `platformio.ini`
 
-Since the current firmware fetches Wi-Fi credentials via BLE, there is no need to configure fixed `GR_WIFI_SSID` / `GR_WIFI_PASSWORD` flags in `platformio.ini`.
-
-Important Parameters:
-
-| Parameter | Default Value | Description |
+| Parameter | Default | Description |
 | --- | ---: | --- |
-| `BLE_SCAN_SECONDS` | `2` | Duration of a single BLE scanning round |
-| `BLE_FAST_CONNECT_TIMEOUT_MS` | `3000` | Timeout for direct reconnect using the saved BLE address and address type |
-| `BLE_CONNECT_ATTEMPTS` | `12` | Number of BLE reconnection attempts when a paired camera profile is stored |
-| `RICOH_BLE_BONDED_SECURITY_WAIT_MS` | `1500` | Short security/encryption wait used when the saved camera profile is marked bonded |
-| `FIRST_BOOT_BLE_PAIRING_ATTEMPTS` | `12` | Number of pairing scan rounds on first boot / when NVS profile is empty |
-| `CAMERA_POWER_OFF_COOLDOWN_MS` | `15000` | Cooldown period after the camera is powered off / disconnected |
-| `BLE_MANUAL_WAKE_REINIT_SETTLE_MS` | `3000` | Settling time after rebuilding the BLE stack during manual wake |
-| `LIVEVIEW_STALL_TIMEOUT_MS` | `5000` | Stall detection threshold for LiveView to attempt recovery when no frames are received |
+| `BLE_SCAN_SECONDS` | `2` | Duration of one BLE scan round |
+| `BLE_FAST_CONNECT_TIMEOUT_MS` | `3000` | Timeout for fast direct reconnect to the saved BLE address |
+| `BLE_CONNECT_TIMEOUT_MS` | `8000` | Timeout for BLE connect after scanning |
+| `BLE_CONNECT_ATTEMPTS` | `12` | Scan/connect attempts when a camera identity is stored |
+| `FIRST_BOOT_BLE_PAIRING_ATTEMPTS` | `12` | Scan rounds on first pairing or when NVS has no identity |
+| `RICOH_BLE_BONDED_SECURITY_WAIT_MS` | `1500` | Security wait for bonded direct reconnect |
+| `RICOH_BLE_SECURITY_WAIT_MS` | `7000` | Security wait for first pairing / non-bonded connect |
+| `RICOH_BLE_POWER_READ_RETRIES` | `2` | Power State read retries before Wi-Fi ON |
+| `RICOH_BLE_OPERATION_MODE_READ_RETRIES` | `2` | Operation Mode read retries before Wi-Fi ON |
+| `RICOH_BLE_BLOCK_WIFI_IN_STANDBY_OPERATION_MODE` | `true` | Block automatic Wi-Fi ON in `BLE_STARTUP` / `POWER_OFF_TRANSFER` |
+| `WIFI_CACHED_CONNECT_GRACE_MS` | `700` | Short delay after Wi-Fi ON before cached connect |
+| `WIFI_CACHED_CONNECT_TIMEOUT_MS` | `1200` | Short timeout for cached Wi-Fi connect |
+| `WIFI_CHANNEL_HINT_CONNECT_TIMEOUT_MS` | `6000` | Wi-Fi connection timeout when channel hint is available |
+| `WIFI_CONNECT_TIMEOUT_MS` | `15000` | Total Wi-Fi connection timeout |
+| `WIFI_CACHE_REFRESH_DELAY_MS` | `5000` | Delayed BLE Wi-Fi refresh after cached success |
+| `CAMERA_POWER_OFF_COOLDOWN_MS` | `15000` | Cooldown after entering camera guard |
+| `BLE_MANUAL_WAKE_REINIT_SETTLE_MS` | `3000` | Settling delay after NimBLE stack rebuild during manual wake |
+| `LIVEVIEW_STALL_TIMEOUT_MS` | `5000` | LiveView stall threshold before recovery |
 
 ---
 
 ## Typical Logs
 
-Normal connection:
+### Normal connection
 
 ```text
-BLE: connected secure
+BLE: connected secure connect_ms=...
 Flow: BLE_SCAN -> BLE_READY (BLE connected)
+BLE: power handle=0x00EB read value=0x01
+BLE: operation mode read value=0x00 state=CAPTURE
+BLE: power notify enabled cccd=0x00EC
 BLE: Wi-Fi open requested
-BLE: Wi-Fi parameters received ssid='GR_H264456' bssid=''
-WiFi: connected ip=192.168.0.4
-HTTP: camera ready model='RICOH GR IV HDF'
+BLE: Wi-Fi parameters received ssid='GR_H264456' bssid='' freq=2412 channel=1
+WiFi: connected ip=192.168.0.4 rssi=-40
+Flow: WIFI_CONNECTING -> LIVEVIEW_RUNNING (LiveView opened)
 LiveView: connected
 ```
 
-Camera power-off guard:
+### Cached Wi-Fi connection
 
 ```text
-BLE: disconnected reason=531
-Flow: BLE_READY -> CAMERA_SLEEP_GUARD (...)
-BLE guard: remote disconnect reason=531; auto wake paused for 15s, then manual wake required
+WiFi cache: waiting 700ms for camera AP before cached connect
+WiFi cache: trying cached params ssid='GR_H264456' bssid='F2:3E:05:26:45:56' channel=1 short_timeout=1200ms
+WiFi: begin channel=1 has_bssid=1 timeout=1200ms
+WiFi: connect completed in ...ms channel=1 status=CONNECTED
+WiFi cache: saved (cached connect) ssid='GR_H264456' bssid='F2:3E:05:26:45:56' channel=1 freq=2412
 ```
 
-Manual wake:
+### Standby camera is not auto-woken
 
 ```text
-BLE guard: manual wake requested (Button A manual wake), previous disconnect reason=531
-BLE guard: manual wake BLE stack rebuild (Button A manual wake)
-BLE: resetting stack (clear objects)
-BLE: scanning for GR camera
+BLE: power handle=0x00EB read value=0x01
+BLE: operation mode read value=0x02 state=BLE_STARTUP
+WiFi blocked: camera operation mode=BLE_STARTUP while power=ON source=WiFi open
+Flow: BLE_READY -> CAMERA_SLEEP_GUARD (BLE operation mode standby)
+```
+
+### Button A shutter
+
+```text
+BLE: Ricoh shutter OperationRequest START param=1 autofocus=1
 ```
 
 ---
 
 ## Troubleshooting
 
-### Camera should not be woken up after powering off
+### The camera should not wake automatically after StickS3 reboots
 
-This is the default behavior of the firmware. When a `531 / 533` disconnect reason is received, the system enters `CAMERA_SLEEP_GUARD` and will not automatically send a Wi-Fi ON command. Once the cooldown ends, you must press Button A to wake the camera manually.
+This is the current intended behavior. If Operation Mode is `BLE_STARTUP` or `POWER_OFF_TRANSFER`, the firmware enters `CAMERA_SLEEP_GUARD` and does not print `BLE: Wi-Fi open requested`. Press Button A to wake the camera manually.
 
-### Will the StickS3 reconnect automatically after rebooting?
+### The first cached Wi-Fi attempt fails
 
-Yes. The guard state is not written to NVS, so rebooting the StickS3 will start fresh from the BLE scanning and connection process.
+This is normal when the camera AP is still starting. The firmware uses a short cache timeout and falls back to fresh BLE WLAN parameters automatically.
 
-### The Button A shutter logs show "BLE shutter failed" but the camera still takes a photo
+### Button A does not trigger AF
 
-RICOH cameras may disconnect or reject the subsequent release command at the exact moment of capturing, causing the logs to show a write failure. As long as the camera successfully takes the picture and the LiveView recovers, this does not affect normal usage.
+First confirm the serial log contains:
+
+```text
+BLE: Ricoh shutter OperationRequest START param=1 autofocus=1
+```
+
+If the log is present but the camera does not autofocus, check the camera focus mode, shutter/AF settings, and whether BLE remote AF is allowed by the camera state. The firmware side is already sending the RICOH Shooting Service AF parameter.
+
+### Serial monitor prints `ClearCommError failed`
+
+This is usually a Windows / PlatformIO serial reconnect message when the device resets. It does not necessarily indicate a firmware fault; wait for the monitor to reconnect.
 
 ---
 
@@ -198,23 +295,28 @@ RICOH cameras may disconnect or reject the subsequent release command at the exa
 
 ```text
 src/
-  main.cpp                 Main state machine, connection flow, guard state, button logic
-  ricoh_ble_client.*       RICOH BLE scanning, connection, Wi-Fi parameters reading, shutter writing
-  gr_wifi.*                ESP32 Wi-Fi STA connection
-  gr_api.*                 RICOH HTTP API & LiveView
-  camera_identity.*        Pure camera Wi-Fi SSID to BLE name derivation
+  main.cpp                 Main state machine, connection flow, standby guard, button logic
+  ricoh_ble_client.*       RICOH BLE scan/connect/security, Wi-Fi parameter reads, OperationMode, AF shutter
+  gr_wifi.*                ESP32 Wi-Fi STA connection, channel/BSSID optimization
+  gr_api.*                 RICOH HTTP API and LiveView
+  camera_profile_store.*   NVS camera identity and Wi-Fi cache
+  camera_identity.*        Wi-Fi SSID to BLE name derivation
+  ble_reconnect_policy.*   BLE address type / direct reconnect helpers
   mjpeg_stream.*           MJPEG stream parser
-  jpeg_decoder.*           JPEG decoding and display rendering
+  jpeg_decoder.*           JPEG decoding and display output
   display.*                StickS3 screen UI
-  camera_profile_store.*   NVS camera profile storage
-  buttons.*                StickS3 button polling (Button A)
+  buttons.*                StickS3 button polling
+
+test/
+  test_native/             Host-side logic tests
 ```
+
+---
 
 ## License
 
 This project is licensed under the GNU General Public License v3.0.
 
-You may use, modify, and distribute this project under the terms of the GPL-3.0 license.  
-If you distribute modified versions or derivative works, you must also release the corresponding source code under the same license.
+You may use, modify, and distribute this project under the terms of the GPL-3.0 license. If you distribute modified versions or derivative works, you must also release the corresponding source code under the same license.
 
-See the [LICENSE](LICENSE) file for details.
+See [LICENSE](LICENSE) for details.
