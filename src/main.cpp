@@ -317,7 +317,7 @@ void enterCameraSleepGuard(const char* source, int reason) {
 }
 
 bool consumeCameraPowerOffNotification(const char* source) {
-  if (!ricohBle.consumePowerOffNotification()) {
+  if (!bleCamera.consumePowerOffNotification()) {
     return false;
   }
 
@@ -326,7 +326,7 @@ bool consumeCameraPowerOffNotification(const char* source) {
 }
 
 bool consumeCameraPowerOffDisconnect(const char* source) {
-  const int reason = ricohBle.consumeDisconnectReason();
+  const int reason = bleCamera.consumeDisconnectReason();
   if (!isCameraPowerOffDisconnectReason(reason)) {
     return false;
   }
@@ -336,7 +336,7 @@ bool consumeCameraPowerOffDisconnect(const char* source) {
 }
 
 bool consumeCameraPowerOffDisconnectAfterReady(const char* source) {
-  const int reason = ricohBle.consumeDisconnectReason();
+  const int reason = bleCamera.consumeDisconnectReason();
   if (!isCameraPowerOffDisconnectReason(reason)) {
     return false;
   }
@@ -366,7 +366,7 @@ void clearCameraSleepGuard(const char* source) {
   cameraAutoWakeBlocked = false;
   cameraAutoWakeCooldownUntil = 0;
   cameraAutoWakeDisconnectReason = 0;
-  ricohBle.clearDisconnectReason();
+  bleCamera.clearDisconnectReason();
 }
 
 bool cameraSleepGuardBlocksFlow(const char* action) {
@@ -704,7 +704,7 @@ bool runBleDiscoveryAtBoot() {
     return true;
   } else if (consumeCameraPowerOffDisconnectAfterReady("BLE fast connect failed")) {
     return false;
-  } else if (ricohBle.lastFailureWasResourceExhausted()) {
+  } else if (bleCamera.lastFailureWasResourceExhausted()) {
     Serial.println("BLE: fast connect exhausted host resources; reset stack before scan retry");
     ricohBle.resetStack();
   } else {
@@ -752,7 +752,7 @@ bool runBleDiscoveryAtBoot() {
       consumeCameraPowerOffDisconnectAfterReady("BLE connect failed");
       showStatusIfChanged("BLE connect failed", bleCamera.lastError(), "Retrying...", "", true);
       ricohBle.disconnect();
-      if (ricohBle.lastFailureWasResourceExhausted()) {
+      if (bleCamera.lastFailureWasResourceExhausted()) {
         Serial.println("BLE: host resources exhausted during connect; reset stack before retry");
         ricohBle.resetStack();
         consecutiveConnectFailures = 0;
@@ -877,7 +877,7 @@ bool connectWifiAfterBleReady() {
     if (consumeCameraPowerOffDisconnect("BLE lost after WiFi open")) {
       return false;
     }
-    ricohBle.clearDisconnectReason();
+    bleCamera.clearDisconnectReason();
     setCameraFlowState(CameraFlowState::BleScan, "BLE lost after WiFi open");
     return false;
   }
@@ -906,7 +906,7 @@ bool connectWifiAfterBleReady() {
       if (consumeCameraPowerOffDisconnect("BLE lost during cached WiFi connect")) {
         return false;
       }
-      ricohBle.clearDisconnectReason();
+      bleCamera.clearDisconnectReason();
       setCameraFlowState(CameraFlowState::BleScan, "BLE lost during cached WiFi connect");
       return false;
     }
@@ -920,7 +920,7 @@ bool connectWifiAfterBleReady() {
       if (consumeCameraPowerOffDisconnect("BLE lost waiting WiFi params")) {
         return false;
       }
-      ricohBle.clearDisconnectReason();
+      bleCamera.clearDisconnectReason();
       setCameraFlowState(CameraFlowState::BleScan, "BLE lost waiting WiFi params");
       return false;
     }
@@ -937,7 +937,7 @@ bool connectWifiAfterBleReady() {
       if (consumeCameraPowerOffDisconnect("BLE lost during WiFi connect")) {
         return false;
       }
-      ricohBle.clearDisconnectReason();
+      bleCamera.clearDisconnectReason();
       setCameraFlowState(CameraFlowState::BleScan, "BLE lost during WiFi connect");
       return false;
     }
