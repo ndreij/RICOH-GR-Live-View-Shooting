@@ -471,7 +471,8 @@ void refreshWifiCacheIfDue() {
   }
 
   RicohBleWifiCredentials fresh;
-  if (!ricohBle.waitForWifiCredentials(fresh, RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS)) {
+  const rvf::Result refreshCredentialsResult = bleCamera.waitForWifiCredentials(fresh, RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS);
+  if (refreshCredentialsResult.failed()) {
     Serial.printf("WiFi cache: deferred refresh failed: %s\n", bleCamera.lastError().c_str());
     return;
   }
@@ -913,7 +914,8 @@ bool connectWifiAfterBleReady() {
   }
 
   RicohBleWifiCredentials wifiCredentials;
-  if (!ricohBle.waitForWifiCredentials(wifiCredentials, RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS)) {
+  const rvf::Result wifiCredentialsResult = bleCamera.waitForWifiCredentials(wifiCredentials, RICOH_BLE_WIFI_CREDENTIAL_WAIT_MS);
+  if (wifiCredentialsResult.failed()) {
     showStatusIfChanged("BLE WiFi params", bleCamera.lastError(), "Back to BLE_READY", "", true);
     grWifi.disconnect();
     if (!bleCamera.isConnected()) {
