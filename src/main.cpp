@@ -8,6 +8,8 @@
 #include "camera_identity.h"
 #include "camera_profile_store.h"
 #include "config.h"
+#include "core/AppConfig.h"
+#include "core/Logger.h"
 #include "display.h"
 #include "gr_api.h"
 #include "gr_wifi.h"
@@ -39,7 +41,7 @@ enum class CameraFlowState {
 
 CameraFlowState cameraFlowState = CameraFlowState::BleScan;
 uint8_t* frameBuffer = nullptr;
-uint8_t streamReadBuffer[STREAM_READ_BUFFER_SIZE];
+uint8_t streamReadBuffer[rvf::AppConfig::Buffer::kStreamReadBufferSize];
 CameraProps cameraProps;
 
 bool liveviewEnabled = true;
@@ -79,7 +81,7 @@ bool beginStickPower() {
   const m5pm1_err_t err = stickPower.begin(&Wire, M5PM1_DEFAULT_ADDR, sda, scl, M5PM1_I2C_FREQ_100K);
   stickPowerReady = (err == M5PM1_OK);
   if (!stickPowerReady) {
-    Serial.printf("Power: M5PM1 begin failed err=%d; fallback to M5Unified power API\n", static_cast<int>(err));
+    LOGW("POWER", "Power: M5PM1 begin failed err=%d; fallback to M5Unified power API", static_cast<int>(err));
     return false;
   }
 
@@ -88,7 +90,7 @@ bool beginStickPower() {
 
   bool pressed = false;
   stickPower.btnGetState(&pressed);
-  Serial.println("Power: M5PM1 ready");
+  LOGLINE_I("POWER", "Power: M5PM1 ready");
   return true;
 }
 
@@ -218,12 +220,12 @@ void showStatusIfChanged(const String& line1,
 
 void waitForSerialConsole() {
   const uint32_t startMs = millis();
-  while (!Serial && (millis() - startMs) < SERIAL_BOOT_WAIT_MS) {
+  while (!Serial && (millis() - startMs) < rvf::AppConfig::SerialPort::kBootWaitMs) {
     delay(10);
   }
   Serial.setDebugOutput(false);
   Serial.println();
-  Serial.println("RICOH GR StickS3 Remote Viewfinder V2");
+  LOGI("BOOT", "%s", rvf::AppConfig::Ui::kBanner);
 }
 
 void closeLiveView(const char* reason) {
@@ -1390,10 +1392,10 @@ void updateStatusUiIfDue() {
 }  // namespace
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(rvf::AppConfig::SerialPort::kBaud);
 
   ui.begin();
-  ui.showBoot("V2 booting...");
+  ui.showBoot(rvf::AppConfig::Ui::kBootMessage);
   waitForSerialConsole();
 
   beginStickPower();
@@ -1404,23 +1406,23 @@ void setup() {
   applyDefaultProfile();
 
   if (!psramFound()) {
-    Serial.println("PSRAM not found; JPEG buffer allocation may fail");
+    LOGLINE_W("MEM", "PSRAM not found; JPEG buffer allocation may fail");
     ui.showError("PSRAM not found");
   }
 
-  frameBuffer = static_cast<uint8_t*>(heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  frameBuffer = static_cast<uint8_t*>(heap_caps_malloc(rvf::AppConfig::Buffer::kFrameBufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (frameBuffer == nullptr) {
-    frameBuffer = static_cast<uint8_t*>(heap_caps_malloc(FRAME_BUFFER_SIZE, MALLOC_CAP_8BIT));
+    frameBuffer = static_cast<uint8_t*>(heap_caps_malloc(rvf::AppConfig::Buffer::kFrameBufferSize, MALLOC_CAP_8BIT));
   }
   if (frameBuffer == nullptr) {
-    Serial.println("Failed to allocate JPEG frame buffer");
+    LOGLINE_E("MEM", "Failed to allocate JPEG frame buffer");
     ui.showError("Frame buffer alloc failed");
     while (true) {
       delay(1000);
     }
   }
 
-  mjpeg.begin(frameBuffer, FRAME_BUFFER_SIZE, onJpegFrame, nullptr);
+  mjpeg.begin(frameBuffer, rvf::AppConfig::Buffer::kFrameBufferSize, onJpegFrame, nullptr);
 
   const bool startupOnline = runCameraFlowOnce();
   lastCameraRecoveryAt = startupOnline ? millis() : 0;
