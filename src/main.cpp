@@ -685,7 +685,8 @@ bool connectStoredBleIdentityFast() {
   options.exchangeMtu = false;
 
   showStatusIfChanged("BLE fast connect", cameraProfile.cameraName, cameraProfile.bleAddress, "Direct reconnect", true);
-  if (!ricohBle.connect(info, options)) {
+  const rvf::Result fastConnectResult = bleCamera.connectCamera(info, options);
+  if (fastConnectResult.failed()) {
     Serial.printf("BLE: fast direct connect failed: %s\n", bleCamera.lastError().c_str());
     return false;
   }
@@ -728,7 +729,7 @@ bool runBleDiscoveryAtBoot() {
                         String("Attempt ") + attempt + "/" + attempts,
                         true);
 
-    RicohBleDeviceInfo info = ricohBle.scanForCamera(cameraProfile.bleAddress, bleName, BLE_SCAN_SECONDS);
+    RicohBleDeviceInfo info = bleCamera.scanCamera(cameraProfile.bleAddress, bleName, BLE_SCAN_SECONDS);
     if (!info.found) {
       showStatusIfChanged("BLE not found", "Retrying...", "", "", true);
     } else if (!info.connectable) {
@@ -746,7 +747,8 @@ bool runBleDiscoveryAtBoot() {
       options.preConnectDelayMs = BLE_SCAN_TO_CONNECT_DELAY_MS;
       options.exchangeMtu = false;
 
-      if (ricohBle.connect(info, options)) {
+      const rvf::Result connectResult = bleCamera.connectCamera(info, options);
+      if (connectResult.ok()) {
         saveConnectedBleIdentity(connectedName, info);
         showStatusIfChanged("BLE link ready", cameraProfile.cameraName, info.address, "WiFi via BLE", true);
         setCameraFlowState(CameraFlowState::BleReady, "BLE connected");
