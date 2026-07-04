@@ -16,6 +16,7 @@
 #include "jpeg_decoder.h"
 #include "mjpeg_stream.h"
 #include "ricoh_ble_client.h"
+#include "services/CameraPowerPolicy.h"
 #include "ui/ButtonInput.h"
 
 namespace {
@@ -30,6 +31,7 @@ CameraProfileStore profileStore;
 CameraProfile cameraProfile;
 RicohBleClient ricohBle;
 M5PM1 stickPower;
+rvf::CameraPowerPolicy cameraPowerPolicy;
 
 enum class CameraFlowState {
   BleScan,
@@ -162,6 +164,28 @@ const char* cameraOperationModeName(RicohCameraOperationMode mode) {
 bool isCameraStandbyOperationMode(RicohCameraOperationMode mode) {
   return mode == RicohCameraOperationMode::BleStartup ||
          mode == RicohCameraOperationMode::PowerOffTransfer;
+}
+
+rvf::CameraPowerStatus toPolicyPowerStatus(RicohCameraPowerState state) {
+  switch (state) {
+    case RicohCameraPowerState::On:
+      return rvf::CameraPowerStatus::On;
+    case RicohCameraPowerState::OffOrShuttingDown:
+      return rvf::CameraPowerStatus::Off;
+    case RicohCameraPowerState::Unknown:
+      return rvf::CameraPowerStatus::Unknown;
+  }
+  return rvf::CameraPowerStatus::Unknown;
+}
+
+rvf::CameraOperationStatus toPolicyOperationStatus(RicohCameraOperationMode mode) {
+  if (isCameraStandbyOperationMode(mode)) {
+    return rvf::CameraOperationStatus::Standby;
+  }
+  if (mode == RicohCameraOperationMode::Unknown) {
+    return rvf::CameraOperationStatus::Unknown;
+  }
+  return rvf::CameraOperationStatus::Ready;
 }
 
 const char* cameraFlowStateName(CameraFlowState state) {
@@ -475,7 +499,7 @@ void applyDefaultProfile() {
 }
 
 bool ensureCameraPowerReadyForWifi(const char* source) {
-  if (!RICOH_BLE_REQUIRE_POWER_ON_BEFORE_WIFI) {
+  if (!cameraPowerPolicy.requiresPowerCheck()) {
     return true;
   }
   if (cameraSleepGuardBlocksFlow(source != nullptr ? source : "power guard")) {
@@ -507,7 +531,7 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
   cameraPowerState = readOk ? nextState : RicohCameraPowerState::Unknown;
   cameraOperationMode = RicohCameraOperationMode::Unknown;
   bool operationModeReadOk = false;
-  if (readOk && cameraPowerState == RicohCameraPowerState::On && RICOH_BLE_BLOCK_WIFI_IN_STANDBY_OPERATION_MODE) {
+  if (cameraPowerPolicy.shouldReadOperationMode(readOk, toPolicyPowerStatus(cameraPowerState))) {
     const uint8_t modeRetries = RICOH_BLE_OPERATION_MODE_READ_RETRIES == 0 ? 1 : RICOH_BLE_OPERATION_MODE_READ_RETRIES;
     for (uint8_t attempt = 0; attempt < modeRetries; ++attempt) {
       if (ricohBle.readOperationMode(cameraOperationMode)) {
@@ -522,7 +546,7 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
       yield();
     }
 
-    if (operationModeReadOk && isCameraStandbyOperationMode(cameraOperationMode) && !cameraManualWakeOverride) {
+    if (cameraPowerPolicy.blocksStandbyOperationMode(operationModeReadOk, toPolicyOperationStatus(cameraOperationMode), cameraManualWakeOverride)) {
       Serial.printf("WiFi blocked: camera operation mode=%s while power=%s source=%s\n",
                     cameraOperationModeName(cameraOperationMode),
                     cameraPowerStateName(cameraPowerState),
@@ -537,7 +561,7 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     }
   }
 
-  if (readOk && cameraPowerState == RicohCameraPowerState::On) {
+  if (cameraPowerPolicy.mayActivateWifi(toPolicyPowerStatus(cameraPowerState))) {
     if (cameraManualWakeOverride && operationModeReadOk && isCameraStandbyOperationMode(cameraOperationMode)) {
       Serial.printf("BLE: operation mode %s; manual wake override allows WiFi\n",
                     cameraOperationModeName(cameraOperationMode));
@@ -548,7 +572,7 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     return true;
   }
 
-  if (cameraManualWakeOverride) {
+  if (cameraManualWakeOverride && !(readOk && cameraPowerState == RicohCameraPowerState::On)) {
     Serial.printf("BLE: power state %s; manual wake override allows WiFi\n", cameraPowerStateName(cameraPowerState));
     if (ricohBle.isConnected() && !ricohBle.enablePowerStateNotify()) {
       Serial.printf("BLE: power notify subscribe failed: %s\n", ricohBle.lastError().c_str());
@@ -556,14 +580,12 @@ bool ensureCameraPowerReadyForWifi(const char* source) {
     return true;
   }
 
-  if (!readOk && RICOH_BLE_ALLOW_WIFI_WHEN_POWER_UNKNOWN) {
+  if (cameraPowerPolicy.allowsWifiWhenPowerUnknown(readOk)) {
     Serial.println("BLE: power state unknown; config allows WiFi open");
     return true;
   }
 
-  const char* reason = (readOk && cameraPowerState == RicohCameraPowerState::OffOrShuttingDown)
-                         ? "BLE power state off"
-                         : "BLE power state unknown";
+  const char* reason = cameraPowerPolicy.blockedReason(readOk, toPolicyPowerStatus(cameraPowerState));
   Serial.printf("WiFi blocked: camera power state=%s readOk=%d source=%s\n",
                 cameraPowerStateName(cameraPowerState),
                 readOk ? 1 : 0,
