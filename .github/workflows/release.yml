@@ -1,0 +1,178 @@
+name: Firmware Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag to create or update, for example v1.0.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    name: build and publish firmware
+    runs-on: ubuntu-latest
+
+    env:
+      PIO_ENV: m5stack-sticks3
+      PROJECT_SLUG: ricoh-gr-live-view-shooting
+      REQUESTED_TAG: ${{ github.event.inputs.tag_name || '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          else
+            TAG_NAME="${REQUESTED_TAG}"
+          fi
+
+          if [[ -z "${TAG_NAME}" ]]; then
+            echo "::error::A release tag is required."
+            exit 1
+          fi
+
+          if [[ ! "${TAG_NAME}" =~ ^v[0-9]+([.][0-9]+)*([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tags must look like v1.0.0 or v1.0.0-beta.1."
+            exit 1
+          fi
+
+          if ! git rev-parse --verify --quiet "refs/tags/${TAG_NAME}" >/dev/null; then
+            git tag "${TAG_NAME}"
+            git push origin "refs/tags/${TAG_NAME}"
+          fi
+
+          git checkout --detach "refs/tags/${TAG_NAME}"
+
+          echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r .github/requirements.txt
+
+      - name: Build firmware
+        run: platformio run -e "${PIO_ENV}"
+
+      - name: Package release assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${{ steps.release.outputs.tag_name }}"
+          BUILD_DIR=".pio/build/${PIO_ENV}"
+          DIST_DIR="dist"
+          PREFIX="${PROJECT_SLUG}-${TAG_NAME}"
+
+          mkdir -p "${DIST_DIR}"
+
+          for file in bootloader.bin partitions.bin firmware.bin; do
+            if [[ ! -f "${BUILD_DIR}/${file}" ]]; then
+              echo "::error::Missing ${BUILD_DIR}/${file}"
+              exit 1
+            fi
+          done
+
+          cp "${BUILD_DIR}/bootloader.bin" "${DIST_DIR}/${PREFIX}-bootloader.bin"
+          cp "${BUILD_DIR}/partitions.bin" "${DIST_DIR}/${PREFIX}-partitions.bin"
+          cp "${BUILD_DIR}/firmware.bin" "${DIST_DIR}/${PREFIX}-firmware.bin"
+
+          python "${HOME}/.platformio/packages/tool-esptoolpy/esptool.py" \
+            --chip esp32s3 merge_bin \
+            -o "${DIST_DIR}/${PREFIX}-merged.bin" \
+            0x0 "${BUILD_DIR}/bootloader.bin" \
+            0x8000 "${BUILD_DIR}/partitions.bin" \
+            0x10000 "${BUILD_DIR}/firmware.bin"
+
+          zip -j "${DIST_DIR}/${PREFIX}-binaries.zip" \
+            "${DIST_DIR}/${PREFIX}-bootloader.bin" \
+            "${DIST_DIR}/${PREFIX}-partitions.bin" \
+            "${DIST_DIR}/${PREFIX}-firmware.bin" \
+            "${DIST_DIR}/${PREFIX}-merged.bin"
+
+          (
+            cd "${DIST_DIR}"
+            sha256sum "${PREFIX}"-*.bin "${PREFIX}"-*.zip > "${PREFIX}-sha256.txt"
+          )
+
+          cat > "${DIST_DIR}/release-notes.md" <<EOF
+          Automated firmware build for ${TAG_NAME}.
+
+          Board: M5Stack StickS3
+          PlatformIO environment: ${PIO_ENV}
+          Commit: ${{ steps.release.outputs.commit_sha }}
+
+          Assets:
+          - ${PREFIX}-merged.bin: combined image for flashing at 0x0
+          - ${PREFIX}-firmware.bin: application image for flashing at 0x10000
+          - ${PREFIX}-bootloader.bin: bootloader image for flashing at 0x0
+          - ${PREFIX}-partitions.bin: partition table image for flashing at 0x8000
+          - ${PREFIX}-binaries.zip: all binary images in one archive
+          - ${PREFIX}-sha256.txt: SHA-256 checksums
+          EOF
+
+          echo "prefix=${PREFIX}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_NAME="${{ steps.release.outputs.tag_name }}"
+          PREFIX="${{ steps.assets.outputs.prefix }}"
+
+          if gh release view "${TAG_NAME}" >/dev/null 2>&1; then
+            gh release edit "${TAG_NAME}" \
+              --title "${TAG_NAME}" \
+              --notes-file dist/release-notes.md
+          else
+            gh release create "${TAG_NAME}" \
+              --title "${TAG_NAME}" \
+              --notes-file dist/release-notes.md
+          fi
+
+          gh release upload "${TAG_NAME}" \
+            "dist/${PREFIX}-bootloader.bin" \
+            "dist/${PREFIX}-partitions.bin" \
+            "dist/${PREFIX}-firmware.bin" \
+            "dist/${PREFIX}-merged.bin" \
+            "dist/${PREFIX}-binaries.zip" \
+            "dist/${PREFIX}-sha256.txt" \
+            --clobber
