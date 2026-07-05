@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/liveview_action.jpg" alt="RICOH GR Remote Viewfinder LiveView" width="100%" />
+  <img src="docs/images/FinalOutput.jpg" alt="RICOH GR Remote Viewfinder LiveView" width="100%" />
 </p>
 
 <h1 align="center">RICOH GR StickS3 Remote Viewfinder</h1>
