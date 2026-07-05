@@ -94,33 +94,63 @@ bool DisplayUi::begin() {
 void DisplayUi::showBoot(const char* message) {
     clear(COLOR_BG);
 
-    // Large stylish GR logo in signature amber
-    _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
+    // Outer card border (matching BLE status screen)
+    const int16_t x = 8;
+    const int16_t y = 6;
+    const int16_t w = _width - 16;
+    const int16_t h = _height - 12;
+    _canvas.fillRoundRect(x, y, w, h, 10, COLOR_CARD);
+    _canvas.drawRoundRect(x, y, w, h, 10, COLOR_GRAPHITE);
+    _canvas.drawRoundRect(x + 2, y + 2, w - 4, h - 4, 8, COLOR_SLATE);
+
+    // Abstract dark geometric lens elements
+    _canvas.fillTriangle(x + 10, y + 16, x + 94, y + 16, x + 45, y + 106, COLOR_PANEL);
+    _canvas.fillTriangle(x + 92, y + 18, x + 142, y + 68, x + 98, y + 112, COLOR_DARK);
+    _canvas.fillTriangle(x + 120, y + 60, x + 205, y + 16, x + 202, y + 108, COLOR_PANEL);
+    _canvas.fillTriangle(x + 118, y + 62, x + 166, y + 112, x + 210, y + 80, COLOR_SLATE);
+    _canvas.fillTriangle(x + 142, y + 72, x + 184, y + 34, x + 216, y + 74, COLOR_DARK);
+    _canvas.fillTriangle(x + 72, y + 24, x + 108, y + 110, x + 56, y + 112, COLOR_DARK);
+
+    // Diagonal light leak highlight band
+    const int16_t hx1 = x + 14;
+    const int16_t hy1 = y + 28;
+    const int16_t hx2 = x + 214;
+    const int16_t hy2 = y + 86;
+    const int16_t band = 12;
+    _canvas.fillTriangle(hx1, hy1, hx2, hy2, hx2, hy2 + band, COLOR_HILITE);
+    _canvas.fillTriangle(hx1, hy1, hx2, hy2 + band, hx1, hy1 + band, COLOR_HILITE);
+
+    // Layered aperture overlays
+    _canvas.fillTriangle(x + 150, y + 78, x + 184, y + 34, x + 216, y + 80, COLOR_DARK);
+    _canvas.fillTriangle(x + 146, y + 82, x + 210, y + 82, x + 134, y + 112, COLOR_DARK);
+
+    // Overlaid brand content with transparent background text
+    _canvas.setTextColor(COLOR_AMBER);
     _canvas.setTextSize(3);
     _canvas.setCursor(102, 20);
     _canvas.print("GR");
 
     // Subtitle
     _canvas.setTextSize(1);
-    _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
+    _canvas.setTextColor(COLOR_WHITE);
     _canvas.setCursor(84, 52);
     _canvas.print("VIEWFINDER");
 
-    // Glowing progress bar outline
-    _canvas.drawRoundRect(40, 72, 160, 6, 3, COLOR_SLATE);
-    _canvas.fillRoundRect(42, 74, 60, 2, 1, COLOR_AMBER);
+    // Progress bar matching the layout
+    _canvas.drawRoundRect(40, 70, 160, 6, 3, COLOR_GRAPHITE);
+    _canvas.fillRoundRect(42, 72, 60, 2, 1, COLOR_AMBER);
 
-    // Boot status message
-    _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
+    // Dynamic boot status message
+    _canvas.setTextColor(COLOR_GRAY);
     const char* msg = safeText(message, "Booting...");
     int msgLen = strlen(msg);
-    _canvas.setCursor((240 - (msgLen * 6)) / 2, 88);
+    _canvas.setCursor((240 - (msgLen * 6)) / 2, 86);
     _canvas.print(msg);
 
-    // Footer divider and hotkeys
+    // Footer divider and hotkeys hint
     _canvas.drawFastHLine(20, _height - 24, 200, COLOR_SLATE);
-    _canvas.setCursor(33, _height - 16);
-    _canvas.print("BtnA: shutter / wake");
+    _canvas.setCursor(60, _height - 16);
+    _canvas.print("BtnA: Shutter / Wake");
 
     pushCanvas();
 }
