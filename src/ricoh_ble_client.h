@@ -51,9 +51,16 @@ enum class RicohCameraOperationMode {
 class RicohBleClient {
 public:
   using ServiceCallback = bool (*)();
+  // On-device passkey entry provider. Called repeatedly during BLE security
+  // negotiation while the camera is displaying its random 6-digit code.
+  // firstCall is true only on the first invocation of a given entry session
+  // (reset UI/state). Return true once the user has committed all 6 digits and
+  // write the code to outCode; return false to keep waiting for input.
+  using PasskeyEntryProvider = bool (*)(bool firstCall, uint32_t& outCode);
 
   void begin();
   void setServiceCallback(ServiceCallback callback);
+  void setPasskeyEntryProvider(PasskeyEntryProvider provider);
   RicohBleDeviceInfo scanForCamera(const String& preferredAddress, const String& preferredName, uint32_t scanSeconds);
   bool connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs);
   bool connect(const RicohBleDeviceInfo& info, const RicohBleConnectOptions& options);

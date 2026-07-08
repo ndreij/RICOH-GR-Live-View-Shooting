@@ -24,6 +24,9 @@ public:
     void showStatus(const String& line1, const String& line2, const String& line3, const String& line4);
     void showError(const char* message, const char* detail = nullptr);
     void showError(const String& message, const String& detail = String());
+    // On-device BLE passkey entry: shows the 6 digits with the active digit
+    // (pos, 0..5) highlighted. pos == 6 means all digits committed (submitting).
+    void showPasskeyEntry(const uint8_t digits[6], uint8_t pos);
     void drawOverlay(const String& wifiStatus,
                      const String& liveviewStatus,
                      const String& model,

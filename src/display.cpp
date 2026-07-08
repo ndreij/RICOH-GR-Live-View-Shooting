@@ -212,6 +212,64 @@ void DisplayUi::showError(const String& message, const String& detail) {
     showError(message.c_str(), detail.length() ? detail.c_str() : nullptr);
 }
 
+void DisplayUi::showPasskeyEntry(const uint8_t digits[6], uint8_t pos) {
+    clear(COLOR_BG);
+
+    // Header
+    _canvas.drawFastHLine(10, 24, _width - 20, COLOR_SLATE);
+    _canvas.setTextSize(1);
+    _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
+    _canvas.setCursor(10, 8);
+    _canvas.print("PAIRING PASSKEY");
+
+    // Instruction line
+    _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
+    _canvas.setCursor(10, 30);
+    _canvas.print("Match the code on the camera");
+
+    // Six digit cells, centered.
+    const int16_t cellW = 30;
+    const int16_t cellH = 34;
+    const int16_t gap = 6;
+    const int16_t totalW = 6 * cellW + 5 * gap;
+    const int16_t startX = (_width - totalW) / 2;
+    const int16_t y = 50;
+
+    _canvas.setTextSize(3);
+    for (uint8_t i = 0; i < 6; ++i) {
+        const int16_t cx = startX + i * (cellW + gap);
+        const bool active = (i == pos);
+        const bool committed = (i < pos);
+
+        _canvas.fillRoundRect(cx, y, cellW, cellH, 4,
+                              active ? COLOR_SLATE : COLOR_CARD);
+        _canvas.drawRoundRect(cx, y, cellW, cellH, 4,
+                              active ? COLOR_AMBER : COLOR_GRAPHITE);
+
+        const uint16_t digitColor =
+            active ? COLOR_AMBER : (committed ? COLOR_WHITE : COLOR_GRAY);
+        _canvas.setTextColor(digitColor);
+        // Center the single character (18px wide at size 3) in the cell.
+        _canvas.setCursor(cx + (cellW - 18) / 2, y + (cellH - 24) / 2);
+        _canvas.print(static_cast<char>('0' + (digits[i] % 10)));
+    }
+
+    // Footer hint / submit state
+    _canvas.drawFastHLine(10, _height - 18, _width - 20, COLOR_SLATE);
+    _canvas.setTextSize(1);
+    if (pos >= 6) {
+        _canvas.setTextColor(COLOR_GREEN, COLOR_BG);
+        _canvas.setCursor(70, _height - 12);
+        _canvas.print("Submitting...");
+    } else {
+        _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
+        _canvas.setCursor(14, _height - 12);
+        _canvas.print("BtnA: +1   Hold: next");
+    }
+
+    pushCanvas();
+}
+
 // Redesigned transparent HUD overlay for Live Viewfinder (rendered onto _canvas)
 void DisplayUi::drawOverlay(const String& wifiStatus,
                             const String& liveviewStatus,
