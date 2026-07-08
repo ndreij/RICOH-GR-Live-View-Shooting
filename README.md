@@ -37,6 +37,7 @@
 * **WLAN 动态参数缓存**：首次连接后，将相机的 Wi-Fi SSID、BSSID、信道及加密参数持久化写入 NVS，在下次启动时最快以 `<0.5s` 的极速完成直连。
 * **物理按键 AF 遥控快门**：支持理光官方 BLE Shooting Service 协议，通过 Button A 进行高精度自动对焦与瞬间抓拍。
 * **一键重置蓝牙配对**：支持长按 Button B 一键清除旧的蓝牙配对及绑定数据，方便快速切换并配对新相机。
+* **GR IIIx BLE 遥控快门（实验性）**：理光 GR IIIx 通过在 StickS3 上输入机身屏幕显示的 6 位配对码完成配对，可作为 BLE 遥控快门使用（自动对焦 + 抓拍）。使用 `-e m5stack-sticks3-gr3x` 编译。该机型暂不支持 LiveView，详见下方 **RICOH GR IIIx 支持（实验性）** 章节。
 * **完整 Native 测试套件**：无需依赖 StickS3 硬件，即可在 Host 端运行核心数据解析和状态转换的本地测试。
 
 ---
@@ -156,8 +157,43 @@ graph TD
 | :--- | :---: | :--- |
 | **RICOH GR IV HDF** | **已验证可用** | 固件核心开发和实机测试靶机，提供最完美的支持。 |
 | **RICOH GR IV 系列** | **理论可用** | 同代 BLE/Wi-Fi/HTTP 协议，未做代码硬编码限制，理论上完美兼容。 |
-| **RICOH GR III / GR IIIx** | **当前不可用** | BLE 交互时序与相机唤醒逻辑存在代际协议差异，非本固件设计支持目标。 |
+| **RICOH GR IIIx** | **仅 BLE 快门** | 通过机身屏幕 6 位配对码在机上完成配对，可作为 BLE 遥控快门（自动对焦 + 抓拍）。暂不支持 Wi-Fi/LiveView。使用 `-e m5stack-sticks3-gr3x` 编译，详见下方 **RICOH GR IIIx 支持（实验性）** 章节。 |
+| **RICOH GR III** | **未验证** | 与 GR IIIx 同代 BLE 协议，仅快门的构建理论上可用，但尚未实机验证。 |
 | **RICOH GR II** | **当前不可用** | 缺乏低功耗蓝牙 (BLE) 先行广播和按需激活 Wi-Fi AP 的交互链路。 |
+
+---
+
+## RICOH GR IIIx 支持（实验性）
+
+理光 GR IIIx 目前仅作为 **BLE 遥控快门** 支持：可完成配对、自动对焦并触发快门，但该机型 **暂不支持** Wi-Fi LiveView 实时取景。
+
+**为何仅支持快门：** GR IIIx 的 GATT 布局与 GR IV 完全不同，没有 GR IV 的 `0x0135` 系列 WLAN 特征值，且其通过 BLE 开启 Wi-Fi 热点的方式尚未确定，因此 LiveView 链路暂未接通。快门链路基于 UUID 实现，可正常工作。
+
+### 编译
+
+```bash
+platformio run -e m5stack-sticks3-gr3x -t upload
+```
+
+该命令启用 `-DCAMERA_MODEL_GR3X`，选择 GR IIIx 的 GATT 句柄并开启 `RICOH_BLE_SHUTTER_ONLY_MODE`：BLE 配对完成后固件保持在 `BLE_READY` 作为纯遥控快门，不再尝试 Wi-Fi/LiveView。
+
+### 机上配对码输入
+
+与 GR IV 不同，GR IIIx 需要经过身份认证（MITM）的 BLE 配对：每次配对时相机屏幕会显示一个随机 6 位配对码，需在 StickS3 上输入：
+
+| 操作 | 按键 |
+| :--- | :--- |
+| 当前高亮位数字 +1（0→9） | 按 **Button A** |
+| 移动到下一位 | **长按 Button A**（约 0.6 秒） |
+| 提交配对码 | 越过最后一位即提交 |
+
+配对绑定成功后，后续重连无需再次输入，约 350ms 完成。
+
+### 快门
+
+| 操作 | 按键 |
+| :--- | :--- |
+| 自动对焦 + 抓拍 | **Button A**（`BLE_READY` 状态下） |
 
 ---
 

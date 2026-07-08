@@ -37,6 +37,7 @@
 * **WLAN Parameter Caching**: Caches SSID, BSSID, channel, and encryption details in ESP32 NVS. Subsequent boots achieve ultra-fast connections in `<0.5s` by skipping BLE renegotiation.
 * **Physical Button AF Shutter**: Fully implements the official RICOH BLE Shooting Service protocol, using Button A to trigger high-precision auto-focus (AF) and instant capture.
 * **One-Click BLE Reset**: Long press Button B to clear stored BLE pairing and bonding data, allowing quick pairing with a new camera.
+* **GR IIIx BLE Shutter (Experimental)**: The RICOH GR IIIx pairs via on-device passkey entry and works as a BLE remote shutter (AF + capture). Build with `-e m5stack-sticks3-gr3x`. LiveView is not yet supported on this model — see [RICOH GR IIIx Support](#ricoh-gr-iiix-support-experimental).
 * **Host-side Native Test Suite**: Allows compiling and running data parser and state transition tests directly on your host machine without hardware.
 
 
@@ -157,8 +158,43 @@ Customize these constants in [src/config.h](file:///C:/Users/Administrator/Docum
 | :--- | :---: | :--- |
 | **RICOH GR IV HDF** | **Verified Working** | Core development target. Supports BLE shutter and LiveView out of the box. |
 | **RICOH GR IV Series** | **Expected to Work** | Shares the same BLE/Wi-Fi/HTTP API generation. Untested but expected to be compatible. |
-| **RICOH GR III / GR IIIx** | **Not Supported** | Uses different BLE handshakes and wake sequences. Outside the scope of this project. |
+| **RICOH GR IIIx** | **BLE Shutter Only** | Pairs via on-device passkey entry and works as a BLE remote shutter (AF + capture). Wi-Fi/LiveView is not yet supported. Build with `-e m5stack-sticks3-gr3x`. See [RICOH GR IIIx Support](#ricoh-gr-iiix-support-experimental). |
+| **RICOH GR III** | **Untested** | Same BLE generation as the GR IIIx; the shutter-only build may work but is unverified. |
 | **RICOH GR II** | **Not Supported** | Lacks the BLE-first broadcast wake-up and on-demand Wi-Fi AP control interfaces. |
+
+---
+
+## RICOH GR IIIx Support (Experimental)
+
+The GR IIIx is supported as a **BLE remote shutter only**. It pairs, focuses, and fires the shutter over BLE; Wi-Fi LiveView is **not** available on this model yet.
+
+**Why shutter-only:** the GR IIIx exposes a completely different GATT layout from the GR IV. It has none of the GR IV's `0x0135`-range WLAN characteristics, and how it enables its Wi-Fi access point over BLE has not yet been determined — so the LiveView bring-up path is not wired for it. The shutter path is UUID-based and works.
+
+### Build
+
+```bash
+platformio run -e m5stack-sticks3-gr3x -t upload
+```
+
+This enables `-DCAMERA_MODEL_GR3X`, which selects the GR IIIx GATT handles and turns on `RICOH_BLE_SHUTTER_ONLY_MODE`: after BLE pairing the firmware stays in `BLE_READY` as a pure shutter remote and never attempts Wi-Fi/LiveView.
+
+### On-device passkey pairing
+
+Unlike the GR IV, the GR IIIx requires an authenticated (MITM) BLE pairing. On each attempt the camera shows a random 6-digit passkey on its screen, and you enter it on the StickS3:
+
+| Action | Button |
+| :--- | :--- |
+| Increment the highlighted digit (0→9) | Press **Button A** |
+| Move to the next digit | **Hold Button A** (~0.6s) |
+| Submit the code | Advance past the last digit |
+
+Once bonded, later reconnects are passwordless and take ~350ms.
+
+### Shutter
+
+| Action | Button |
+| :--- | :--- |
+| Auto-focus + capture | **Button A** (in `BLE_READY`) |
 
 ---
 
