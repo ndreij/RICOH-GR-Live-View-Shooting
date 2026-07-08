@@ -64,6 +64,10 @@ struct AppFlowActions {
     uint32_t (*lastCameraRecoveryAt)() = nullptr;
     void (*setLastCameraRecoveryAt)(uint32_t timestampMs) = nullptr;
     bool liveviewEnabled = true;
+    // When true, the flow connects over BLE and then stays in BLE_READY as a
+    // pure remote shutter — it never brings up Wi-Fi / LiveView. Used for the
+    // GR IIIx, whose Wi-Fi/LiveView bring-up is not yet supported.
+    bool bleShutterOnlyMode = false;
     uint8_t wifiOpenAttempts = 0;
     uint32_t retryDelayMs = 0;
     uint32_t bleScanRetryIntervalMs = 0;

@@ -731,6 +731,58 @@ bool serviceButtonsDuringBleOperation() {
   return true;
 }
 
+// On-device BLE passkey entry (button-driven). The GR IIIx displays a random
+// 6-digit code each pairing attempt; the user keys it in on the StickS3:
+//   BtnA short press  = increment the current digit (0-9, wraps)
+//   BtnA hold (>= PASSKEY_ADVANCE_HOLD_MS) = lock the digit and advance
+// After the 6th digit is locked the code is committed and injected.
+uint8_t g_pinDigits[6] = {0, 0, 0, 0, 0, 0};
+uint8_t g_pinPos = 0;
+uint32_t g_pinPressStartMs = 0;
+bool g_pinPressActive = false;
+
+bool providePairingPasskey(bool firstCall, uint32_t& outCode) {
+  if (firstCall) {
+    for (uint8_t i = 0; i < 6; ++i) {
+      g_pinDigits[i] = 0;
+    }
+    g_pinPos = 0;
+    g_pinPressActive = false;
+    ui.showPasskeyEntry(g_pinDigits, g_pinPos);
+    return false;
+  }
+
+  // M5.update() is driven each iteration by serviceButtonsDuringBleOperation()
+  // (buttons.poll()), which the security-wait loop calls right before us. Read
+  // the latched BtnA edges here WITHOUT calling M5.update() again, otherwise the
+  // second update would swallow the press/release events.
+  if (M5.BtnA.wasPressed()) {
+    g_pinPressStartMs = millis();
+    g_pinPressActive = true;
+  }
+  if (g_pinPressActive && M5.BtnA.wasReleased()) {
+    g_pinPressActive = false;
+    const uint32_t heldMs = millis() - g_pinPressStartMs;
+    if (heldMs >= PASSKEY_ADVANCE_HOLD_MS) {
+      ++g_pinPos;
+      if (g_pinPos >= 6) {
+        uint32_t code = 0;
+        for (uint8_t i = 0; i < 6; ++i) {
+          code = code * 10 + (g_pinDigits[i] % 10);
+        }
+        outCode = code;
+        ui.showPasskeyEntry(g_pinDigits, 6);
+        return true;
+      }
+      ui.showPasskeyEntry(g_pinDigits, g_pinPos);
+    } else {
+      g_pinDigits[g_pinPos] = (g_pinDigits[g_pinPos] + 1) % 10;
+      ui.showPasskeyEntry(g_pinDigits, g_pinPos);
+    }
+  }
+  return false;
+}
+
 bool resetBlePairingIfRequested() {
   if (!key2PairingResetRequested) {
     return false;
@@ -837,13 +889,22 @@ bool runBleDiscoveryAtBoot() {
       bleCamera.disconnect();
       if (bleCamera.lastFailureWasResourceExhausted()) {
         Serial.println("BLE: host resources exhausted during connect; reset stack before retry");
-        bleCamera.resetStack();
+        // clearObjects=true: NimBLE can leave a NimBLEClient stuck/un-freed when a
+        // connect fails mid security handshake (observed live: repeated
+        // "BLE security timeout"/"BLE lost during security" failures each leaked
+        // one client, and resetStack(false) does NOT reclaim them — after 3 leaks
+        // NimBLEDevice::createClient() permanently fails with "already at max: 3"
+        // until a full power cycle). Force a full object clear here so automatic
+        // retries can actually recover instead of wedging the stack.
+        bleCamera.resetStack(true);
         consecutiveConnectFailures = 0;
         skipRetryDelay = true;
       } else {
         consecutiveConnectFailures++;
         if (BLE_STACK_RESET_AFTER_FAILURES > 0 && consecutiveConnectFailures >= BLE_STACK_RESET_AFTER_FAILURES) {
-          bleCamera.resetStack();
+          // Same leaked-client risk as above after repeated non-resource-exhausted
+          // failures (e.g. security timeouts) — clear objects on this reset too.
+          bleCamera.resetStack(true);
           consecutiveConnectFailures = 0;
           skipRetryDelay = true;
         }
@@ -861,7 +922,9 @@ bool runBleDiscoveryAtBoot() {
 
   showStatusIfChanged("BLE unavailable", "Return BLE scan", preferredBleName(), "", true);
   setCameraFlowState(CameraFlowState::BleScan, "BLE attempts exhausted");
-  bleCamera.resetStack();
+  // Full attempt budget exhausted -- clear any leaked NimBLEClient objects before
+  // falling back to BleScan so the next round starts from a clean slate.
+  bleCamera.resetStack(true);
   return false;
 }
 
@@ -1069,10 +1132,16 @@ bool readAndProcessLiveViewFrameForController() {
   return true;
 }
 
+// LiveView perf diagnostics: [PREVIEW] gives fps/read_ms/mjpeg_cb_ms/decode_ms/
+// render_ms, [FRAME] gives buffer occupancy + dropped-frame counts. Both are
+// logged on the same 5s cadence so the two lines land together in the serial
+// monitor — compare read_ms (network-bound) vs decode_ms+render_ms
+// (CPU-bound) to see which stage is actually limiting the refresh rate
+// before tuning STREAM_READ_BUFFER_SIZE / JPEG_SCALE_POLICY further.
 void logPreviewStatsForController() {
   wifiPreview.logStatsIfDue(millis());
   previewFrameBuffer.syncStreamStats(mjpeg.frames(), mjpeg.droppedFrames(), mjpeg.currentLength());
-  previewFrameBuffer.logStatsIfDue(millis());
+  previewFrameBuffer.logStatsIfDue(millis(), 5000);
 }
 
 uint32_t lastFrameAtForController() {
@@ -1229,6 +1298,7 @@ rvf::AppFlowActions makeAppFlowActions() {
   actions.lastCameraRecoveryAt = lastCameraRecoveryAtForController;
   actions.setLastCameraRecoveryAt = setLastCameraRecoveryAtForController;
   actions.liveviewEnabled = liveviewEnabled;
+  actions.bleShutterOnlyMode = (RICOH_BLE_SHUTTER_ONLY_MODE != 0);
   actions.wifiOpenAttempts = WIFI_OPEN_ATTEMPTS;
   actions.retryDelayMs = BLE_CONNECT_RETRY_DELAY_MS;
   actions.bleScanRetryIntervalMs = BLE_SCAN_RETRY_INTERVAL_MS;
@@ -1487,12 +1557,27 @@ void updateStatusUiIfDue() {
     return;
   }
 
+#if RICOH_BLE_SHUTTER_ONLY_MODE
+  // BLE-only remote shutter: report the BLE link and shutter hint instead of
+  // Wi-Fi state, since Wi-Fi/LiveView is intentionally never brought up.
+  if (bleCamera.isConnected()) {
+    showStatusIfChanged("BLE_READY",
+                        "BtnA: shutter",
+                        cameraProfile.cameraName.length() ? cameraProfile.cameraName
+                                                          : String("RICOH GR"),
+                        "");
+  } else {
+    showStatusIfChanged("BLE SEARCHING", "Press BtnA to reconnect", "", "");
+  }
+  return;
+#else
   if (!wifiPreview.isPreviewRunning()) {
     showStatusIfChanged(grWifi.statusText(),
                         liveviewEnabled ? grWifi.localIPString() : "Preview paused",
                         cameraProps.model,
                         cameraProps.battery);
   }
+#endif
 }
 
 void runAppTick() {
@@ -1540,6 +1625,7 @@ void setup() {
   beginStickPower();
   buttons.begin();
   ricohBle.setServiceCallback(serviceButtonsDuringBleOperation);
+  ricohBle.setPasskeyEntryProvider(providePairingPasskey);
   decoder.begin();
   grWifi.begin();
 

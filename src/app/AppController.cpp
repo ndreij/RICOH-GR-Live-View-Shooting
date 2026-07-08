@@ -87,6 +87,12 @@ bool AppController::runCameraFlowOnce(const AppFlowActions& actions, uint32_t no
         return false;
     }
 
+    // BLE-only remote shutter: stop once the BLE link is up; never chase Wi-Fi.
+    if (actions.bleShutterOnlyMode) {
+        transitionTo(AppState::BleReady, "BLE shutter-only ready", millis());
+        return true;
+    }
+
     for (uint8_t attempt = 0; attempt < actions.wifiOpenAttempts; ++attempt) {
         if (actions.cameraSleepGuardActive != nullptr && actions.cameraSleepGuardActive()) {
             return false;
@@ -431,6 +437,12 @@ void AppController::serviceCameraFlowIfNeeded(const AppFlowActions& actions, uin
 
     if (actions.cameraSleepGuardBlocksFlow != nullptr &&
         actions.cameraSleepGuardBlocksFlow("scheduled service")) {
+        return;
+    }
+
+    // BLE-only remote shutter: if the BLE link is already up, there is nothing
+    // further to service — stay in BLE_READY rather than retrying Wi-Fi.
+    if (actions.bleShutterOnlyMode && isBleReady() && bleConnected) {
         return;
     }
 
