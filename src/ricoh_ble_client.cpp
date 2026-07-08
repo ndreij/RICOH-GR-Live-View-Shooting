@@ -1253,7 +1253,9 @@ bool RicohBleClient::openWifi() {
   }
 
   _lastError = "";
-  Serial.println("BLE: Wi-Fi open requested");
+  Serial.printf("BLE: Wi-Fi open requested (handle=0x%04X value=0x%02X)\n",
+                RICOH_BLE_WLAN_POWER_HANDLE,
+                RICOH_BLE_WLAN_ON_VALUE);
   return true;
 }
 
@@ -1401,6 +1403,11 @@ bool RicohBleClient::waitForWifiCredentials(RicohBleWifiCredentials& credentials
 
     RicohBleWifiCredentials current = credentials;
     for (const WlanParamHandle& item : kWlanParamHandles) {
+      // Some models (e.g. GR IIIx) do not expose every WLAN parameter; those
+      // handles are configured as 0. Skip them to avoid invalid-handle reads.
+      if (item.handle == 0) {
+        continue;
+      }
       std::vector<uint8_t> value;
       String err;
       if (readHandleWithResponse(client, item.handle, value, err)) {

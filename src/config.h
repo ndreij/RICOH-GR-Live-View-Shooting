@@ -119,11 +119,17 @@ constexpr uint8_t RICOH_BLE_GR4_POWER_STATE_OFF_VALUE = 0x00;
 //   Channel      51DE6EBC-...  -> handle 0x00F7 (r/w)
 // Camera Power is characteristic B58CE84C-0666-4DE9-BEC8-2D27B27B3211 in the
 // Camera service (4B445988-...), at handle 0x00BC (value) / 0x00BD (CCCD) — NOT
-// GR IV's 0x00EB. There is no separate "turn WLAN AP on" handle like GR IV's
-// 0x0135; how the GR IIIx enables its AP still needs to be determined (see the
-// WLAN_POWER_HANDLE == 0 note), so the Wi-Fi/LiveView path is not yet wired for
-// this model. The shutter path is already UUID-based and works.
-constexpr uint16_t RICOH_BLE_GR3X_WLAN_POWER_HANDLE      = 0;       // GR IIIx has no GR-IV-style WLAN power toggle; AP-enable TBD
+// GR IV's 0x00EB.
+//
+// AP-enable: unlike the GR IV (which has a dedicated 0x0135 "WLAN power" toggle),
+// the GR IIIx brings up its Wi-Fi AP by writing the Network Type characteristic
+// (9111CDD0-..., handle 0x00F0, sint8): 0x01 = AP mode ON, 0x00 = OFF. Source:
+// dm-zharov/ricoh-gr-bluetooth-api wlan_control_command/network_type.md. SSID and
+// passphrase (0x00F3 / 0x00F5) are static r/w config values readable at any time,
+// so credentials can be read before or after the AP is enabled. We therefore
+// repurpose RICOH_BLE_GR3X_WLAN_POWER_HANDLE as the Network Type handle: openWifi()
+// writes RICOH_BLE_GR3X_WLAN_ON_VALUE (0x01) to it to switch the camera into AP mode.
+constexpr uint16_t RICOH_BLE_GR3X_WLAN_POWER_HANDLE      = 0x00F0;  // Network Type 9111CDD0-...; write 0x01 = AP mode ON
 constexpr uint8_t  RICOH_BLE_GR3X_WLAN_ON_VALUE           = 0x01;
 constexpr uint16_t RICOH_BLE_GR3X_WLAN_SSID_HANDLE       = 0x00F3;  // SSID   90638E5A-...
 constexpr uint16_t RICOH_BLE_GR3X_WLAN_PASSPHRASE_HANDLE = 0x00F5;  // Passphrase 0F38279C-...
@@ -136,16 +142,13 @@ constexpr uint8_t  RICOH_BLE_GR3X_POWER_STATE_ON_VALUE   = 0x01;
 constexpr uint8_t  RICOH_BLE_GR3X_POWER_STATE_OFF_VALUE  = 0x00;
 
 // BLE-only remote shutter mode: connect over BLE and stay in BLE_READY as a
-// pure shutter remote, without ever bringing up Wi-Fi / LiveView. Defaults on
-// for the GR IIIx (CAMERA_MODEL_GR3X), whose Wi-Fi/LiveView bring-up is not yet
-// supported, and off for the GR IV (full LiveView flow). Override from
-// platformio.ini with -DRICOH_BLE_SHUTTER_ONLY_MODE=0/1.
+// pure shutter remote, without ever bringing up Wi-Fi / LiveView. Defaults off
+// for both the GR IV and GR IIIx (full LiveView flow) now that the GR IIIx
+// Wi-Fi AP-enable path (Network Type 0x00F0) is verified working. Override from
+// platformio.ini with -DRICOH_BLE_SHUTTER_ONLY_MODE=1 to build a pure BLE
+// remote shutter (see the m5stack-sticks3-gr3x-shutter env).
 #ifndef RICOH_BLE_SHUTTER_ONLY_MODE
-#  ifdef CAMERA_MODEL_GR3X
-#    define RICOH_BLE_SHUTTER_ONLY_MODE 1
-#  else
-#    define RICOH_BLE_SHUTTER_ONLY_MODE 0
-#  endif
+#  define RICOH_BLE_SHUTTER_ONLY_MODE 0
 #endif
 
 // Set to 1 to print all GATT services/characteristics on every BLE connect.
