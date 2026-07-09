@@ -32,7 +32,9 @@ platformio test -e native      # host-side 纯逻辑单元测试
 
 ## 模块导航
 
-代码全部扁平放在 `src/`（共 10 个 `.cpp`/`.h` 对 + `config.h`，约 3711 行）。按职责分层：
+> ⚠️ **本节已过时（2026-07-09 起）**：`src/` 已从纯扁平结构演进为分层结构，新增了 `src/app/`、`src/board/`、`src/core/`、`src/drivers/`、`src/services/`、`src/supervisor/`、`src/ui/` 等目录（新旧模块目前同时存在，`main.cpp` 两套都在 include）。下表仍是旧的扁平模块列表，仅供参考旧文件的职责，不代表当前完整结构。完整、已核对的文件清单和新旧模块对应关系见 [`docs/project_overview.md`](docs/project_overview.md)「功能模块」一节。同时，本节提到的主状态机（`BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning` + `CameraSleepGuard`）也已重构，见下方「核心状态机」旁注和 `docs/project_overview.md`。
+
+代码原先全部扁平放在 `src/`（共 10 个 `.cpp`/`.h` 对 + `config.h`，约 3711 行）。按职责分层（旧结构）：
 
 | 层 | 文件 | 职责 |
 | --- | --- | --- |
@@ -78,7 +80,9 @@ flowchart TD
 
 ## 核心状态机
 
-`main.cpp` 的 `CameraFlowState`：`BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning`，外加保护态 `CameraSleepGuard`。
+> ⚠️ **本节已过时**：`CameraFlowState` 现在只是 `rvf::AppState`（定义于 `src/app/AppState.h`）的类型别名，成员已从 6 个扩展到 21 个（新增 `Booting`、`Idle`、`ScanningCamera`、`ConnectingBle`、`CheckingCameraPower`、`CameraPowerOff`、`ActivatingWifi`、`ConnectingWifi`、`HttpProbing`、`PreviewStarting`、`PreviewRunning`、`PreviewStopped`、`Shooting`、`Disconnected`、`Error` 等）。实际代码中的关机保护态用的是 `CameraPowerOff`，而非下面提到的 `CameraSleepGuard`（`CameraSleepGuard` 仍在枚举里但未见被实际赋值，疑似遗留）。详见 [`docs/project_overview.md`](docs/project_overview.md) 和 [`docs/ricoh_ble_protocol.md`](docs/ricoh_ble_protocol.md)。下面这段按旧命名描述整体流程，语义仍大致成立，仅命名对不上新代码。
+
+`main.cpp` 的 `CameraFlowState`：`BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning`，外加保护态 `CameraSleepGuard`（现为 `CameraPowerOff`，见上方警告）。
 
 - 收到相机主动断连（reason `0x213`/`0x215`）或 BLE 电源通知 `0x00` → 进入 `CameraSleepGuard`，15s 冷却期内禁止扫描/重连/Wi-Fi ON，冷却后**仍不自动唤醒**，须用户按键。
 - `loop()` 周期：`handleButtons → serviceCameraFlowIfNeeded → ensureWiFi → refreshPropsIfDue → ensureLiveView → updateStatusUiIfDue`。
@@ -92,7 +96,7 @@ flowchart TD
 4. **帧缓冲在 PSRAM** —— `FRAME_BUFFER_SIZE=256KB`，优先 `MALLOC_CAP_SPIRAM`，回退内部 RAM；无 PSRAM 直接报错停机。
 5. **JPEG 缩放** —— `config.h` 设 `JPEG_SCALE_POLICY=JPEG_SCALE_HALF`（覆盖 `display.h`/`jpeg_decoder.h` 的 `QUARTER` 默认），此为 `m5stack-sticks3` 基础环境的取值。`m5stack-sticks3-gr3x` 环境在 `platformio.ini` 的 `build_flags` 中进一步覆盖为 `JPEG_SCALE_QUARTER`（实测 GR IIIx 上约 9fps，对比 HALF 的约 4.6fps；解码器按 contain-fit 整帧显示，两侧留黑边，不裁切）。
 6. **NVS schema** —— namespace `ricoh2`，`proto_ver`（当前 3）/`cam_name`/`ble_addr`/`ble_addr_type`/`ble_bonded`/`cam_ip`/Wi-Fi cache。保护态只在 RAM 中生效，StickS3 重启后会重新走自动连接流程。已保存 BLE 身份的 `setup()` 启动流只做一轮快速扫描，失败后交给主循环处理 KEY1 和周期重试。
-7. **按键 = 仅 `M5.BtnA`** —— 见下方「文档漂移」。
+7. **按键 = 仅 `M5.BtnA`** —— 见下方「按键实现说明」（原文写的是「文档漂移」小节，但本文件里从未存在同名标题，这里已改成实际标题名）。
 
 ## 按键实现说明
 

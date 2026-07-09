@@ -7,10 +7,6 @@
   </a>
 </p>
 
-<p align="center">
-  <img src="docs/images/FinalOutput_EN.png" alt="RICOH GR Live View Shooting" width="100%" />
-</p>
-
 <h1 align="center">RICOH GR Live View Shooting</h1>
 
 <p align="center">
@@ -22,10 +18,10 @@
 </p>
 
 > [!NOTE]
-> Looking for details on the communication protocol or state machine? Read [docs/project_overview.md](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/docs/project_overview.md) for the architecture overview, and [docs/ricoh_ble_protocol.md](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/docs/ricoh_ble_protocol.md) for detailed BLE characteristics and handles.
+> Looking for details on the communication protocol or state machine? Read [docs/project_overview.md](docs/project_overview.md) for the architecture overview, and [docs/ricoh_ble_protocol.md](docs/ricoh_ble_protocol.md) for detailed BLE characteristics and handles.
 
 > [!NOTE]
-> **Project Development Note**: The author of this repository does not have an embedded development background. All firmware code, system architecture design, and documentation in this repository were entirely developed and structured in collaboration with the AI assistant (Codex). Please excuse any code design issues or inefficiencies. You are highly welcome to open [Issues](https://github.com/sky18Dragon/RicohViewfinder/issues) or submit Pull Requests for discussion and improvement!
+> **Project Development Note**: The author of this repository does not have an embedded development background. All firmware code, system architecture design, and documentation in this repository were entirely developed and structured in collaboration with AI assistants (Codex and Claude Code). Please excuse any code design issues or inefficiencies. You are highly welcome to open [Issues](https://github.com/ndreij/RICOH-GR-Live-View-Shooting/issues) or submit Pull Requests for discussion and improvement!
 
 ---
 
@@ -74,7 +70,7 @@ You can control the viewfinder's behavior using the buttons (Button A, Button B,
 | Physical Button | App State / Context | Triggered Action |
 | :--- | :--- | :--- |
 | **Button A** | During LiveView (`LIVEVIEW_RUNNING`) | Triggers BLE Auto-Focus (AF) and shoots (writes `ShootingFlavor=IMMEDIATE`) |
-| **Button A** | Standby Cooldown (`CAMERA_SLEEP_GUARD`) | Manually overrides the guard, resets the BLE stack, and attempts to wake/reconnect |
+| **Button A** | Standby Cooldown (`CAMERA_POWER_OFF`) | Manually overrides the guard, resets the BLE stack, and attempts to wake/reconnect |
 | **Button B** | Any State (Long Press for 3s) | Triggers BLE pairing reset: clears stored BLE pairing/bonding information, terminates active Wi-Fi/BLE connections, and restarts scanning for new camera pairing |
 | **Power Button (BtnPWR)** | Any State (Long Press) | Gracefully terminates Wi-Fi/BLE connections, closes LiveView, and powers off the StickS3 |
 
@@ -85,10 +81,10 @@ You can control the viewfinder's behavior using the buttons (Button A, Button B,
 
 ### 1. Software Architecture Layout
 The codebase has been refactored into distinct layers communicating via asynchronous events:
-* **[SystemSupervisor](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/SystemSupervisor.h)**: A health monitor running as a background task. It detects stalled Wi-Fi / HTTP LiveView streams and schedules recovery actions.
-* **[AppController](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppController.h)**: The central business logic state machine, coordinating connections, power guards, manual wake overrides, and event dispatch.
-* **[BleCameraService](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/BleCameraService.h)**: Encapsulates BLE tasks, such as scanning, bonding, querying power/shutter services, and writing shutter commands.
-* **[WifiPreviewService](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/WifiPreviewService.h)**: Manages Wi-Fi STA connections and reads the HTTP MJPEG stream.
+* **[SystemSupervisor](src/supervisor/SystemSupervisor.h)**: A health monitor running as a background task. It detects stalled Wi-Fi / HTTP LiveView streams and schedules recovery actions.
+* **[AppController](src/app/AppController.h)**: The central business logic state machine, coordinating connections, power guards, manual wake overrides, and event dispatch.
+* **[BleCameraService](src/services/BleCameraService.h)**: Encapsulates BLE tasks, such as scanning, bonding, querying power/shutter services, and writing shutter commands.
+* **[WifiPreviewService](src/services/WifiPreviewService.h)**: Manages Wi-Fi STA connections and reads the HTTP MJPEG stream.
 
 ### 2. State Transition Flow
 The diagram below details the application's connection and fallback paths from boot to live preview:
@@ -106,8 +102,8 @@ graph TD
     G --> H
     H --> I[Read Power State & Operation Mode]
     I --> J{Operation Mode?}
-    J -->|CAPTURE / PLAYBACK| K[Write 0x0135 to request Wi-Fi ON]
-    J -->|BLE_STARTUP / POWER_OFF_TRANSFER| L[Enter CAMERA_SLEEP_GUARD]
+    J -->|CAPTURE / PLAYBACK| K[Request Wi-Fi ON over BLE<br/>GR IV: write 0x0135 / GR IIIx: write Network Type 0x00F0]
+    J -->|BLE_STARTUP / POWER_OFF_TRANSFER| L[Enter CAMERA_POWER_OFF guard]
     K --> M{Wi-Fi Params Cached?}
     M -->|Yes| N[Fast Connect using BSSID + Channel <Short Timeout>]
     M -->|No| O[Read Fresh BLE Wi-Fi Params & Connect]
@@ -121,17 +117,21 @@ graph TD
     T --> D
 ```
 
+> Note: the GR IIIx has no equivalent of the GR IV's `0x0135` WLAN-power handle — it uses a completely different **Network Type** characteristic (`0x00F0`) to switch into Wi-Fi AP mode. See [RICOH GR IIIx Support](#ricoh-gr-iiix-support-experimental) below and [docs/ricoh_ble_protocol.md](docs/ricoh_ble_protocol.md) for the full handle table.
+
 ### 3. Camera Power-off and Sleep Protection (Standby Guard)
 When the camera turns off (due to auto power-off or manual shutdown), or when the StickS3 boots and finds the camera in BLE standby (`BLE_STARTUP`):
 1. The StickS3 immediately tears down its Wi-Fi and BLE connections to save camera power.
-2. The state machine transitions to `CAMERA_SLEEP_GUARD` and starts a **15-second safety cooldown**.
+2. The state machine transitions to `CAMERA_POWER_OFF` and starts a **15-second safety cooldown**.
 3. During this cooldown and subsequent standby phase, **automatic wake requests are completely blocked**. The camera remains in standby until the user presses Button A to wake it intentionally.
+
+> `CameraSleepGuard` still exists as an enum value in `src/app/AppState.h`, but the code never actually assigns it — the guard state that's really used at runtime is `CameraPowerOff` (printed as `CAMERA_POWER_OFF` in the flow log below).
 
 ---
 
 ## Key Configuration
 
-Customize these constants in [src/config.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/config.h) or `platformio.ini` to adjust timing:
+Customize these constants in [src/config.h](src/config.h) or `platformio.ini` to adjust timing:
 
 | Parameter | Default Value | Description |
 | :--- | :---: | :--- |
@@ -140,7 +140,7 @@ Customize these constants in [src/config.h](file:///C:/Users/Administrator/Docum
 | `BLE_CONNECT_TIMEOUT_MS` | `8000` | Timeout when establishing a scanned BLE connection (ms) |
 | `BLE_CONNECT_ATTEMPTS` | `12` | Maximum connection cycles when a cached identity exists |
 | `RICOH_BLE_BONDED_SECURITY_WAIT_MS` | `1500` | Post-connect wait time for BLE security/encryption to settle (ms) |
-| `RICOH_BLE_SECURITY_WAIT_MS` | `7000` | Max timeout for first-time security bonding to complete (ms) |
+| `RICOH_BLE_SECURITY_WAIT_MS` | `45000` | Max timeout for first-time security bonding to complete (ms) — long because GR IIIx on-device passkey entry can take a while |
 | `RICOH_BLE_POWER_NOTIFY_SETTLE_MS` | `30` | Short settle window after enabling power notifications, used to catch immediate power-off notifications before Wi-Fi ON |
 | `WIFI_CACHED_CONNECT_GRACE_MS` | `700` | Warm-up delay after requesting Wi-Fi ON before trying cached credentials |
 | `WIFI_CACHED_CONNECT_TIMEOUT_MS` | `1200` | Aggressive connection timeout for cached BSSID + Channel (ms) |
@@ -152,7 +152,7 @@ Customize these constants in [src/config.h](file:///C:/Users/Administrator/Docum
 ## Camera Compatibility
 
 > [!WARNING]
-> The current code and protocol parameters have been verified on **RICOH GR IV HDF** only.
+> The current code and protocol parameters have been verified on real hardware for **RICOH GR IV HDF** and **RICOH GR IIIx** only. Other models in the table below are untested extrapolations.
 
 | Camera Series | Status | Compatibility Notes |
 | :--- | :---: | :--- |
@@ -200,58 +200,85 @@ Once bonded, later reconnects are passwordless and take ~350ms.
 
 ## Project Structure
 
-* [platformio.ini](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/platformio.ini) — PlatformIO configuration and dependency mapping
-* [src/main.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/main.cpp) — Entry point, setup initialization, and main loop
-* [src/app/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/) — Application state and control flow
-  * [AppController.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppController.cpp) / [AppController.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppController.h) — State machine coordinator
-  * [AppState.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppState.h) — List of application states
-  * [AppFlowActions.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/app/AppFlowActions.h) — Action maps for flow transitions
-* [src/supervisor/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/) — Runtime health watchdog
-  * [SystemSupervisor.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/SystemSupervisor.cpp) / [SystemSupervisor.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/supervisor/SystemSupervisor.h) — Monitors stream health and triggers resets on stall
-* [src/services/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/) — Protocol and stream transport layers
-  * [BleCameraService.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/BleCameraService.cpp) / [BleCameraService.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/BleCameraService.h) — NimBLE client, queries modes/shutter characteristics
-  * [WifiPreviewService.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/WifiPreviewService.cpp) / [WifiPreviewService.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/WifiPreviewService.h) — Wi-Fi link management and LiveView downloader
-  * [PreviewFrameBuffer.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/PreviewFrameBuffer.cpp) / [PreviewFrameBuffer.h](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/services/PreviewFrameBuffer.h) — Circular double-buffered frame manager to reduce fragmentation and delay
-* [src/camera_profile_store.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/camera_profile_store.cpp) — Handles NVS profiles and Wi-Fi credential serialization
-* [src/jpeg_decoder.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/jpeg_decoder.cpp) / [mjpeg_stream.cpp](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/src/mjpeg_stream.cpp) — Splits MJPEG streams and decodes JPEG frames using ESP32-S3 hardware acceleration
-* [test/test_native/](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/test/test_native/) — Local host-side unit tests verifying core logic and stream processing
+> The codebase is mid-refactor: it is transitioning from a flat single-directory layout to a layered one. `src/main.cpp` currently `#include`s **both** the old flat headers and the new layered ones, so the flat files below are not dead code yet — treat both lists as live until the refactor finishes.
+
+**New layered modules:**
+
+* [platformio.ini](platformio.ini) — PlatformIO configuration and dependency mapping
+* [src/main.cpp](src/main.cpp) — Entry point, setup initialization, and `loop()` (now just calls `runAppTick()`)
+* [src/app/](src/app/) — Application state and control flow
+  * [AppController.cpp](src/app/AppController.cpp) / [AppController.h](src/app/AppController.h) — State machine coordinator (`appStateName()`, `transitionTo()`, the `Flow: A -> B (reason) uptime=...` log line)
+  * [AppState.h](src/app/AppState.h) — `rvf::AppState` enum (21 members) — `CameraFlowState` in `main.cpp` is a type alias for this
+  * [AppFlowActions.h](src/app/AppFlowActions.h) — Action maps for flow transitions
+* [src/board/](src/board/) — Board-level pin/config definitions ([BoardConfig.cpp](src/board/BoardConfig.cpp)/[.h](src/board/BoardConfig.h), [StickS3Pins.h](src/board/StickS3Pins.h))
+* [src/core/](src/core/) — Shared infrastructure: [AppConfig](src/core/AppConfig.cpp), [AppEvent.h](src/core/AppEvent.h), [AppMessage.h](src/core/AppMessage.h), [Logger](src/core/Logger.cpp), [PeriodicTask.h](src/core/PeriodicTask.h), [Result.h](src/core/Result.h)
+* [src/drivers/](src/drivers/) — Hardware drivers: [ButtonDriver](src/drivers/ButtonDriver.cpp), [DisplayDriver](src/drivers/DisplayDriver.cpp)
+* [src/supervisor/](src/supervisor/) — Runtime health watchdog
+  * [SystemSupervisor.cpp](src/supervisor/SystemSupervisor.cpp) / [SystemSupervisor.h](src/supervisor/SystemSupervisor.h) — Monitors stream health and triggers resets on stall
+* [src/services/](src/services/) — Protocol and stream transport layers
+  * [BleCameraService.cpp](src/services/BleCameraService.cpp) / [BleCameraService.h](src/services/BleCameraService.h) — NimBLE client, queries modes/shutter characteristics
+  * [WifiPreviewService.cpp](src/services/WifiPreviewService.cpp) / [WifiPreviewService.h](src/services/WifiPreviewService.h) — Wi-Fi link management and LiveView downloader
+  * [PreviewFrameBuffer.cpp](src/services/PreviewFrameBuffer.cpp) / [PreviewFrameBuffer.h](src/services/PreviewFrameBuffer.h) — Circular double-buffered frame manager to reduce fragmentation and delay
+  * [CameraPowerPolicy.cpp](src/services/CameraPowerPolicy.cpp) / [CameraService.cpp](src/services/CameraService.cpp) — Camera power-state gating and orchestration
+  * [ShutterService.cpp](src/services/ShutterService.cpp) — Shutter trigger orchestration
+* [src/ui/](src/ui/) — [UiManager](src/ui/UiManager.cpp) (screen rendering), [ButtonInput](src/ui/ButtonInput.cpp), [UserCommand.h](src/ui/UserCommand.h)
+
+**Older flat modules (still in active use, not yet migrated):**
+
+* [src/ricoh_ble_client.cpp](src/ricoh_ble_client.cpp) — RICOH BLE protocol: scanning, pairing, Wi-Fi credential reads, shutter writes, power notifications
+* [src/gr_wifi.cpp](src/gr_wifi.cpp) — ESP32 STA connection to the camera's Wi-Fi AP
+* [src/gr_api.cpp](src/gr_api.cpp) — HTTP `/v1/props` and `/v1/liveview` MJPEG transport
+* [src/display.cpp](src/display.cpp) — Screen UI (boot/status/error/overlay)
+* [src/buttons.cpp](src/buttons.cpp) — Polls `M5.BtnA`
+* [src/camera_identity.cpp](src/camera_identity.cpp) — Derives candidate BLE names from the camera's Wi-Fi SSID
+* [src/camera_profile_store.cpp](src/camera_profile_store.cpp) — Handles NVS profiles and Wi-Fi credential serialization
+* [src/jpeg_decoder.cpp](src/jpeg_decoder.cpp) / [mjpeg_stream.cpp](src/mjpeg_stream.cpp) — Splits MJPEG streams and decodes JPEG frames using ESP32-S3 hardware acceleration
+* [src/config.h](src/config.h) — Global constants and BLE GATT handles
+* [test/test_native/](test/test_native/) — Local host-side unit tests verifying core logic and stream processing
 
 ---
 
 ## Troubleshooting & Logs
 
+> Every `Flow:` line printed by the firmware follows `Flow: <from> -> <to> (<reason>) uptime=<ms>ms` (see `AppController::transitionTo()`). The examples below keep that exact format; state names are whatever `appStateName()` returns for the current `rvf::AppState` value — note that `CameraSleepGuard` is a defined enum value but is never actually assigned by the code, so the real guard state you'll see in logs is always `CAMERA_POWER_OFF`, not `CAMERA_SLEEP_GUARD`.
+
 ### 1. Normal Connect & Launch
 ```text
 BLE: connected secure connect_ms=2800
-Flow: BLE_SCAN -> BLE_READY (BLE connected)
+Flow: BLE_SCAN -> BLE_READY (BLE connected) uptime=2801ms
+Flow: BLE_READY -> CHECKING_CAMERA_POWER (WiFi open) uptime=2802ms
 BLE: power handle=0x00EB read value=0x01
 BLE: operation mode read value=0x00 state=CAPTURE
 BLE: power notify enabled cccd=0x00EC
-BLE: Wi-Fi open requested
-BLE: Wi-Fi parameters received ssid='GR_H264456' bssid='F2:3E:05:26:45:56' freq=2412 channel=1
+Flow: CHECKING_CAMERA_POWER -> ACTIVATING_WIFI (BLE WiFi ON) uptime=2830ms
+BLE: Wi-Fi open requested (handle=0x0135 value=0x01)
+BLE: Wi-Fi parameters received ssid='GR_H264456' bssid='F2:3E:05:26:45:56' freq=2412 channel=1 wait_ms=340
 WiFi cache: waiting 700ms for camera AP before cached connect
 WiFi cache: trying cached params ssid='GR_H264456' bssid='F2:3E:05:26:45:56' channel=1 short_timeout=1200ms
 WiFi: connect completed in 450ms channel=1 status=CONNECTED
-Flow: WIFI_CONNECTING -> LIVEVIEW_RUNNING (LiveView opened)
+Flow: WIFI_CONNECTING -> LIVEVIEW_RUNNING (LiveView opened) uptime=4520ms
 LiveView: connected
 ```
+*(GR IIIx uses a different Wi-Fi-on characteristic — `handle=0x00F0` instead of `0x0135` — everything else in the sequence is shared.)*
 
 ### 2. Standby Intercept (Auto-wake Blocked)
 ```text
+Flow: BLE_READY -> CHECKING_CAMERA_POWER (WiFi open) uptime=2802ms
 BLE: power handle=0x00EB read value=0x01
 BLE: operation mode read value=0x02 state=BLE_STARTUP
-WiFi blocked: camera operation mode=BLE_STARTUP while power=ON source=WiFi open
-Flow: BLE_READY -> CAMERA_SLEEP_GUARD (BLE operation mode standby)
-BLE guard: remote disconnect reason=533; auto wake paused for 15s, then manual wake required
+WiFi held: camera asleep (operation mode=BLE_STARTUP power=On); NOT sending WLAN-ON, waiting for user to power on + press BtnA source=WiFi open
+Flow: CHECKING_CAMERA_POWER -> CAMERA_POWER_OFF (BLE operation mode standby) uptime=2845ms
+BLE guard: remote disconnect reason=533; idle until user powers camera on + presses BtnA
 ```
-*(The firmware shuts down connection elements, blocks automatic wake, and goes quiet)*
+*(The firmware shuts down connection elements, blocks automatic wake, and goes quiet — it never writes WLAN-ON to a camera it isn't sure is awake and in CAPTURE mode, since that would extend the lens on a camera that's actually off.)*
 
 ### 3. Camera Powered Off Mid-Session (Immediate Detection)
 ```text
+Flow: LIVEVIEW_RUNNING -> BLE_SCAN (BLE lost) uptime=47990ms
 BLE: disconnect reason=531 (0x213 RemoteUserTerminated)
 BLE: reconnect refused by camera (reason=531 0x213) -> camera off, entering guard
 BLE guard: remote disconnect reason=531; idle until user powers camera on + presses BtnA
-Flow: LIVEVIEW_RUNNING -> CAMERA_SLEEP_GUARD (reconnect refused -- camera off)
+Flow: BLE_SCAN -> CAMERA_POWER_OFF (reconnect refused -- camera off) uptime=48210ms
 ```
 *(When the camera is switched off mid-session, its BLE layer reliably tears down the link with reason 531/533 within about 1.5 seconds. The firmware treats that as immediate proof the camera is off and enters the guard right away, showing "Camera off" instantly instead of letting a Wi-Fi attempt run to its full timeout (up to 15s) or flickering between "Connecting..." and "Camera off".)*
 
@@ -268,7 +295,7 @@ AUTO: probe did not confirm CAPTURE (probed=1 mode=3) -- keep waiting
 SystemSupervisor: checking preview health...
 SystemSupervisor: liveview last frame time 5200 ms ago, threshold is 5000 ms
 SystemSupervisor: liveview stall detected! Requesting system recovery.
-Flow: LIVEVIEW_RUNNING -> BLE_READY (Resetting connections)
+Flow: LIVEVIEW_RUNNING -> BLE_READY (Resetting connections) uptime=91340ms
 ...
 ```
 
@@ -276,4 +303,4 @@ Flow: LIVEVIEW_RUNNING -> BLE_READY (Resetting connections)
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](file:///C:/Users/Administrator/Documents/RICOH%20Viewfinder/LICENSE). You are free to modify, use, and distribute this firmware, provided any modifications or derivative works are also open-sourced under the GPL-3.0.
+This project is licensed under the [GNU General Public License v3.0 (GPL-3.0)](LICENSE). You are free to modify, use, and distribute this firmware, provided any modifications or derivative works are also open-sourced under the GPL-3.0.
