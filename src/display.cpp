@@ -12,10 +12,13 @@ constexpr uint16_t COLOR_AMBER = 0xFD20;  // Signature Amber Orange (#FF9500)
 constexpr uint16_t COLOR_SLATE = 0x2104;  // Slate Gray (#212121)
 constexpr uint16_t COLOR_GRAY = 0x7BEF;   // Mid Gray (#7B7B7B)
 constexpr uint16_t COLOR_CARD = 0x0841;   // Deep black panel
-constexpr uint16_t COLOR_PANEL = 0x18E3;  // Dark graphite
 constexpr uint16_t COLOR_GRAPHITE = 0x31A6;
-constexpr uint16_t COLOR_DARK = 0x0000;
-constexpr uint16_t COLOR_HILITE = 0xE71C;
+
+// Title shown on the boot / status screens. This build talks to whichever GR
+// body pairs over BLE (GR IIIx, GR IV, ...) and the exact model isn't known
+// until BLE/Wi-Fi identify it, so the status screen shows a generic product
+// name here rather than guessing/hardcoding one specific model.
+constexpr const char* kModelLabel = "GR REMOTE";
 
 const char* safeText(const char* value, const char* fallback = "") {
     return value != nullptr ? value : fallback;
@@ -66,14 +69,16 @@ bool DisplayUi::begin() {
     cfg.serial_baudrate = 115200;
     M5.begin(cfg);
 
-    M5.Display.setRotation(1);
+    _baseRotation = 1;
+    M5.Display.setRotation(_baseRotation);
     _width = M5.Display.width();
     _height = M5.Display.height();
 
     // StickS3 is physically 135x240; rotation 1/3 should expose landscape 240x135.
     // If a board package reports the opposite, rotate once more to keep callers in landscape.
     if (_width < _height) {
-        M5.Display.setRotation(3);
+        _baseRotation = 3;
+        M5.Display.setRotation(_baseRotation);
         _width = M5.Display.width();
         _height = M5.Display.height();
     }
@@ -91,6 +96,16 @@ bool DisplayUi::begin() {
     return true;
 }
 
+void DisplayUi::setFlipped(bool flipped) {
+    if (flipped == _flipped) {
+        return;
+    }
+    _flipped = flipped;
+    // +2 mod 4 is a 180 turn; keeps landscape orientation, just upside down.
+    M5.Display.setRotation(flipped ? (_baseRotation ^ 2) : _baseRotation);
+    pushCanvas();
+}
+
 void DisplayUi::showBoot(const char* message) {
     clear(COLOR_BG);
 
@@ -103,36 +118,15 @@ void DisplayUi::showBoot(const char* message) {
     _canvas.drawRoundRect(x, y, w, h, 10, COLOR_GRAPHITE);
     _canvas.drawRoundRect(x + 2, y + 2, w - 4, h - 4, 8, COLOR_SLATE);
 
-    // Abstract dark geometric lens elements
-    _canvas.fillTriangle(x + 10, y + 16, x + 94, y + 16, x + 45, y + 106, COLOR_PANEL);
-    _canvas.fillTriangle(x + 92, y + 18, x + 142, y + 68, x + 98, y + 112, COLOR_DARK);
-    _canvas.fillTriangle(x + 120, y + 60, x + 205, y + 16, x + 202, y + 108, COLOR_PANEL);
-    _canvas.fillTriangle(x + 118, y + 62, x + 166, y + 112, x + 210, y + 80, COLOR_SLATE);
-    _canvas.fillTriangle(x + 142, y + 72, x + 184, y + 34, x + 216, y + 74, COLOR_DARK);
-    _canvas.fillTriangle(x + 72, y + 24, x + 108, y + 110, x + 56, y + 112, COLOR_DARK);
-
-    // Diagonal light leak highlight band
-    const int16_t hx1 = x + 14;
-    const int16_t hy1 = y + 28;
-    const int16_t hx2 = x + 214;
-    const int16_t hy2 = y + 86;
-    const int16_t band = 12;
-    _canvas.fillTriangle(hx1, hy1, hx2, hy2, hx2, hy2 + band, COLOR_HILITE);
-    _canvas.fillTriangle(hx1, hy1, hx2, hy2 + band, hx1, hy1 + band, COLOR_HILITE);
-
-    // Layered aperture overlays
-    _canvas.fillTriangle(x + 150, y + 78, x + 184, y + 34, x + 216, y + 80, COLOR_DARK);
-    _canvas.fillTriangle(x + 146, y + 82, x + 210, y + 82, x + 134, y + 112, COLOR_DARK);
-
-    // Overlaid brand content with transparent background text
-    _canvas.setTextColor(COLOR_AMBER);
+    // Clean centered brand — no busy geometric artwork behind the text.
+    _canvas.setTextColor(COLOR_AMBER, COLOR_CARD);
     _canvas.setTextSize(3);
     _canvas.setCursor(102, 20);
     _canvas.print("GR");
 
     // Subtitle
     _canvas.setTextSize(1);
-    _canvas.setTextColor(COLOR_WHITE);
+    _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
     _canvas.setCursor(84, 52);
     _canvas.print("VIEWFINDER");
 
@@ -157,15 +151,7 @@ void DisplayUi::showBoot(const char* message) {
 
 void DisplayUi::showStatus(const char* line1, const char* line2, const char* line3, const char* line4) {
     clear(COLOR_BG);
-
-    _canvas.drawFastHLine(10, 24, _width - 20, COLOR_SLATE);
-    _canvas.setTextSize(1);
-    _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
-    _canvas.setCursor(10, 8);
-    _canvas.print("GR VIEWFINDER");
-
     drawStatusLines(line1, line2, line3, line4);
-
     pushCanvas();
 }
 
@@ -215,17 +201,13 @@ void DisplayUi::showError(const String& message, const String& detail) {
 void DisplayUi::showPasskeyEntry(const uint8_t digits[6], uint8_t pos) {
     clear(COLOR_BG);
 
-    // Header
-    _canvas.drawFastHLine(10, 24, _width - 20, COLOR_SLATE);
-    _canvas.setTextSize(1);
-    _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
-    _canvas.setCursor(10, 8);
-    _canvas.print("PAIRING PASSKEY");
-
-    // Instruction line
-    _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
-    _canvas.setCursor(10, 30);
-    _canvas.print("Match the code on the camera");
+    // Single title, same size as the status screen — no other small text.
+    _canvas.setTextSize(2);
+    _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
+    const char* title = "ENTER CODE";
+    const int16_t titleW = static_cast<int16_t>(strlen(title) * 12);
+    _canvas.setCursor((_width - titleW) / 2, 14);
+    _canvas.print(title);
 
     // Six digit cells, centered.
     const int16_t cellW = 30;
@@ -233,7 +215,7 @@ void DisplayUi::showPasskeyEntry(const uint8_t digits[6], uint8_t pos) {
     const int16_t gap = 6;
     const int16_t totalW = 6 * cellW + 5 * gap;
     const int16_t startX = (_width - totalW) / 2;
-    const int16_t y = 50;
+    const int16_t y = 58;
 
     _canvas.setTextSize(3);
     for (uint8_t i = 0; i < 6; ++i) {
@@ -252,19 +234,6 @@ void DisplayUi::showPasskeyEntry(const uint8_t digits[6], uint8_t pos) {
         // Center the single character (18px wide at size 3) in the cell.
         _canvas.setCursor(cx + (cellW - 18) / 2, y + (cellH - 24) / 2);
         _canvas.print(static_cast<char>('0' + (digits[i] % 10)));
-    }
-
-    // Footer hint / submit state
-    _canvas.drawFastHLine(10, _height - 18, _width - 20, COLOR_SLATE);
-    _canvas.setTextSize(1);
-    if (pos >= 6) {
-        _canvas.setTextColor(COLOR_GREEN, COLOR_BG);
-        _canvas.setCursor(70, _height - 12);
-        _canvas.print("Submitting...");
-    } else {
-        _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
-        _canvas.setCursor(14, _height - 12);
-        _canvas.print("BtnA: +1   Hold: next");
     }
 
     pushCanvas();
@@ -375,82 +344,194 @@ void DisplayUi::drawStatusLines(const char* line1, const char* line2, const char
     const char* s3 = safeText(line3);
     const char* s4 = safeText(line4);
 
-    const bool bleStopped = statusContains(s1, s2, s3, s4, "BLE UNAVAILABLE") ||
-                            statusContains(s1, s2, s3, s4, "SCAN STOP") ||
-                            statusContains(s1, s2, s3, s4, "STOPPED") ||
-                            statusContains(s1, s2, s3, s4, "ATTEMPTS EXHAUSTED") ||
-                            statusContains(s1, s2, s3, s4, "CAMERA STANDBY") ||
-                            statusContains(s1, s2, s3, s4, "AUTO WAKE") ||
-                            statusContains(s1, s2, s3, s4, "COOLDOWN");
+    // Camera off / not awake yet: the user has not powered the camera on. When
+    // off the camera either does not advertise, or (once it was on this session)
+    // keeps advertising a standby beacon that the firmware must NOT chase. All of
+    // these coalesce into one calm, actionable "turn on the camera" screen.
+    const bool bleWaiting = statusContains(s1, s2, s3, s4, "CAMERA OFF") ||
+                            statusContains(s1, s2, s3, s4, "TURN ON CAMERA") ||
+                            statusContains(s1, s2, s3, s4, "CAMERA ASLEEP") ||
+                            statusContains(s1, s2, s3, s4, "CAMERA STANDBY");
 
-    const bool bleConnected = statusContains(s1, s2, s3, s4, "BLE_READY") ||
-                              statusContains(s1, s2, s3, s4, "BLE LINK READY") ||
-                              statusContains(s1, s2, s3, s4, "WIFI") ||
-                              statusContains(s1, s2, s3, s4, "HTTP") ||
-                              statusContains(s1, s2, s3, s4, "LIVEVIEW") ||
-                              statusContains(s1, s2, s3, s4, "LIVE VIEW") ||
-                              statusContains(s1, s2, s3, s4, "BUTTON A SHUTTER");
+    // Boot / first-probe transient: the stick just powered on and is doing its
+    // first passive awake scan before it knows whether the camera is on.
+    const bool bleChecking = statusContains(s1, s2, s3, s4, "CHECKING CAMERA");
 
-    const bool bleConnecting = statusContains(s1, s2, s3, s4, "CONNECTING") ||
-                               statusContains(s1, s2, s3, s4, "CAMERA FOUND") ||
-                               statusContains(s1, s2, s3, s4, "FAST CONNECT");
+    // Genuinely online: the camera powered on and cleared the BLE power gate.
+    // Bare BLE_READY does NOT count — during the camera-off standby poll the
+    // firmware reaches BLE_READY every cycle, which must not read as connected.
+    const bool bleOnline = statusContains(s1, s2, s3, s4, "WIFI CONNECTED") ||
+                           statusContains(s1, s2, s3, s4, "HTTP PROBE OK") ||
+                           statusContains(s1, s2, s3, s4, "HTTP") ||
+                           statusContains(s1, s2, s3, s4, "LIVEVIEW") ||
+                           statusContains(s1, s2, s3, s4, "LIVE VIEW") ||
+                           statusContains(s1, s2, s3, s4, "BUTTON A SHUTTER") ||
+                           statusContains(s1, s2, s3, s4, "SHOT OK");
 
-    const char* bleStatus = "BLE SEARCHING...";
-    if (bleConnected) {
-        bleStatus = "BLE CONNECTED";
-    } else if (bleStopped) {
-        bleStatus = "BLE PAUSED";
-    } else if (bleConnecting) {
-        bleStatus = "BLE CONNECTING...";
+    const bool bleConnected = bleOnline ||
+                              statusContains(s1, s2, s3, s4, "BLE_READY") ||
+                              statusContains(s1, s2, s3, s4, "BLE LINK READY");
+
+    // Transient connect-phase markers. These sub-states pass through BLE_READY /
+    // "BLE link ready" on the way up (checking power, opening Wi-Fi, recovery
+    // retry) but are NOT the settled connected state -- without this demotion
+    // they'd flash "CONNECTED" while we're still mid-connect (and, on a stale
+    // standby link after camera-off, keep reading "CONNECTED" for ~30s). Genuine
+    // online states (bleOnline) never carry these markers, so they stay
+    // CONNECTED; only bare BLE_READY gets demoted to CONNECTING here.
+    const bool bleConnecting = statusContains(s1, s2, s3, s4, "CHECKING POWER") ||
+                               statusContains(s1, s2, s3, s4, "OPENING WIFI") ||
+                               statusContains(s1, s2, s3, s4, "WIFI VIA BLE") ||
+                               statusContains(s1, s2, s3, s4, "CAMERA RECOVERY") ||
+                               statusContains(s1, s2, s3, s4, "CONNECTING");
+
+    // No paired device yet: the firmware is scanning to pair (main passes
+    // "Pairing GR BLE" / "Pairing mode").
+    const bool blePairing = statusContains(s1, s2, s3, s4, "PAIRING");
+
+    // Connect sub-step accent, derived from the raw status keywords, shown under
+    // "CONNECTING..." so the user sees forward progress instead of a static word.
+    const char* connectStep = "LINK";
+    if (statusContains(s1, s2, s3, s4, "WIFI")) {
+        connectStep = "WI-FI";
+    } else if (statusContains(s1, s2, s3, s4, "HTTP") ||
+               statusContains(s1, s2, s3, s4, "PROBE") ||
+               statusContains(s1, s2, s3, s4, "LIVE")) {
+        connectStep = "LIVE VIEW";
     }
 
-    // Fixed rectangular viewfinder frame. The border intentionally stays the
-    // same graphite color; only the GR IV status dot reflects BLE state.
-    const int16_t x = 8;
-    const int16_t y = 6;
-    const int16_t w = _width - 16;
-    const int16_t h = _height - 12;
-    _canvas.fillRoundRect(x, y, w, h, 10, COLOR_CARD);
-    _canvas.drawRoundRect(x, y, w, h, 10, COLOR_GRAPHITE);
-    _canvas.drawRoundRect(x + 2, y + 2, w - 4, h - 4, 8, COLOR_SLATE);
+    // Instantaneous classification. Everything not otherwise tagged — active
+    // connect attempts and transient cooldown/retry churn — coalesces into one
+    // calm "connecting" state so the user never sees the sub-second flip.
+    enum BleUiStatus { Ui_Connecting, Ui_Connected, Ui_Waiting, Ui_Checking, Ui_Pairing };
+    BleUiStatus raw = Ui_Connecting;
+    if (bleConnected && !bleConnecting) {
+        raw = Ui_Connected;
+    } else if (bleWaiting) {
+        raw = Ui_Waiting;
+    } else if (blePairing) {
+        raw = Ui_Pairing;
+    } else if (bleChecking) {
+        raw = Ui_Checking;
+    }
 
-    // Abstract dark geometric surface inspired by the reference image, adapted
-    // to the StickS3 rectangular screen instead of a round lens.
-    _canvas.fillTriangle(x + 10, y + 16, x + 94, y + 16, x + 45, y + 106, COLOR_PANEL);
-    _canvas.fillTriangle(x + 92, y + 18, x + 142, y + 68, x + 98, y + 112, COLOR_DARK);
-    _canvas.fillTriangle(x + 120, y + 60, x + 205, y + 16, x + 202, y + 108, COLOR_PANEL);
-    _canvas.fillTriangle(x + 118, y + 62, x + 166, y + 112, x + 210, y + 80, COLOR_SLATE);
-    _canvas.fillTriangle(x + 142, y + 72, x + 184, y + 34, x + 216, y + 74, COLOR_DARK);
-    _canvas.fillTriangle(x + 72, y + 24, x + 108, y + 110, x + 56, y + 112, COLOR_DARK);
+    const uint32_t nowMs = millis();
 
-    // White diagonal highlight band.
-    const int16_t hx1 = x + 14;
-    const int16_t hy1 = y + 28;
-    const int16_t hx2 = x + 214;
-    const int16_t hy2 = y + 86;
-    const int16_t band = 12;
-    _canvas.fillTriangle(hx1, hy1, hx2, hy2, hx2, hy2 + band, COLOR_HILITE);
-    _canvas.fillTriangle(hx1, hy1, hx2, hy2 + band, hx1, hy1 + band, COLOR_HILITE);
+    // NB: no camera-off latch. The firmware's camera-off wait state is
+    // authoritative -- while it is active, main.cpp's updateStatusUiIfDue() forces
+    // the "Camera off" status every tick, and the connect flow is blocked, so
+    // there is no standby-reconnect churn to hide. When the wait state clears
+    // (the user powered the camera on and a probe confirmed CAPTURE), the status
+    // legitimately becomes "Connecting..." and MUST be shown -- an old latch that
+    // held "CAMERA OFF" until full online is exactly what made a live reconnect
+    // look stuck on "camera off". Classify purely on the current status.
+    const BleUiStatus target = raw;
 
-    // Re-darken lower lens facets over the highlight for a layered aperture feel.
-    _canvas.fillTriangle(x + 150, y + 78, x + 184, y + 34, x + 216, y + 80, COLOR_DARK);
-    _canvas.fillTriangle(x + 146, y + 82, x + 210, y + 82, x + 134, y + 112, COLOR_DARK);
+    // Minimum-dwell debounce: hold a status on screen for a floor before letting
+    // it change, so a brief real state change can't flash. A change is applied
+    // immediately when the previous status has already been shown longer than
+    // the floor (the common case), so steady transitions aren't delayed.
+    constexpr uint32_t kStatusMinDwellMs = 2000;
+    static BleUiStatus displayed = Ui_Checking;
+    static uint32_t lastChangeMs = 0;
+    static bool dwellInit = false;
+    // "Camera off" (Ui_Waiting) is the authoritative, settled wait state: the
+    // sleep guard forces it every tick and blocks the connect flow, so it will
+    // not flicker. Apply it IMMEDIATELY, bypassing the dwell floor -- otherwise a
+    // brief "CONNECTING... / LINK" painted during the ~1.5s camera-off reconnect
+    // attempt gets held for the full 2s floor and lingers on screen after the
+    // flow has already concluded the camera is off (the "stuck on Connecting
+    // Link" the user saw). All other transitions keep the anti-flash floor.
+    if (!dwellInit) {
+        displayed = target;
+        lastChangeMs = nowMs;
+        dwellInit = true;
+    } else if (target != displayed &&
+               (target == Ui_Waiting || (nowMs - lastChangeMs) >= kStatusMinDwellMs)) {
+        displayed = target;
+        lastChangeMs = nowMs;
+    }
+
+    // Full-bleed status screen: no card border or inset frame — the model name
+    // and connection status sit directly on the background. The framed card the
+    // panel used to draw left a visible border/margin the user asked to remove.
+    const int16_t h = _height;
+
+    // While pairing (unpaired), tell the user to enable pairing on the camera.
+    // Two lines because "ENABLE PAIRING ON CAMERA" at size 2 exceeds 240px.
+    if (displayed == Ui_Pairing) {
+        _canvas.setTextSize(2);
+        _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
+        const char* hint1 = "ENABLE PAIRING";
+        const char* hint2 = "ON CAMERA";
+        const int16_t hint1W = static_cast<int16_t>(strlen(hint1) * 12);
+        const int16_t hint2W = static_cast<int16_t>(strlen(hint2) * 12);
+        _canvas.setCursor((_width - hint1W) / 2, 4);
+        _canvas.print(hint1);
+        _canvas.setCursor((_width - hint2W) / 2, 22);
+        _canvas.print(hint2);
+    }
+
+    // Vertically center the up-to-3-line title/status text block (title,
+    // status word, optional sub-step/hint line) as one group. The block used
+    // to sit at a fixed title y=40 with the status/hint rows pinned to the
+    // bottom (h-55 / h-28), which left a cramped ~12px margin under the last
+    // row against a much larger ~40px margin above the title. Centering the
+    // whole 3-row group evens out the top/bottom margins instead.
+    constexpr int16_t kRowH = 16;  // textSize(2) glyph height
+    constexpr int16_t kRowGap = 12;
+    constexpr int16_t kBlockH = kRowH * 3 + kRowGap * 2;
+    const int16_t blockTop = static_cast<int16_t>((h - kBlockH) / 2);
+    const int16_t titleY = blockTop;
+    const int16_t statusY = static_cast<int16_t>(blockTop + kRowH + kRowGap);
+    const int16_t hintY = static_cast<int16_t>(statusY + kRowH + kRowGap);
 
     _canvas.setTextSize(2);
-    _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
-    const char* title = "GR IV";
+    _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
+    const char* title = kModelLabel;
     const int16_t titleW = static_cast<int16_t>(strlen(title) * 12);
-    const int16_t titleX = static_cast<int16_t>((_width - titleW) / 2 - 4);
-    _canvas.setCursor(titleX, y + 14);
+    const int16_t titleX = static_cast<int16_t>((_width - titleW) / 2);
+    _canvas.setCursor(titleX, titleY);
     _canvas.print(title);
-    _canvas.fillCircle(titleX + titleW + 11, y + 21, 4, bleConnected ? COLOR_GREEN : COLOR_RED);
 
-    _canvas.setTextSize(2);
-    const int16_t statusW = static_cast<int16_t>(strlen(bleStatus) * 12);
-    const int16_t statusX = static_cast<int16_t>((_width - statusW) / 2);
-    _canvas.setTextColor(COLOR_WHITE, COLOR_CARD);
-    _canvas.setCursor(statusX, y + h - 29);
-    _canvas.print(bleStatus);
+    // Camera off gets its own two-line, actionable message; every other
+    // non-connected state renders as the single coalesced "CONNECTING..." with
+    // an optional sub-step accent line beneath it.
+    if (displayed == Ui_Waiting) {
+        _canvas.setTextSize(2);
+        const char* offLine = "CAMERA OFF";
+        const int16_t offW = static_cast<int16_t>(strlen(offLine) * 12);
+        _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
+        _canvas.setCursor((_width - offW) / 2, statusY);
+        _canvas.print(offLine);
+        const char* hint = "TURN ON TO CONNECT";
+        const int16_t hintW = static_cast<int16_t>(strlen(hint) * 12);
+        _canvas.setTextSize(2);
+        _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
+        _canvas.setCursor((_width - hintW) / 2, hintY);
+        _canvas.print(hint);
+    } else {
+        const char* bleStatus = (displayed == Ui_Connected) ? "CONNECTED"
+                              : (displayed == Ui_Pairing)   ? "PAIRING..."
+                              : (displayed == Ui_Checking)  ? "CHECKING..."
+                                                            : "CONNECTING...";
+        _canvas.setTextSize(2);
+        const int16_t statusW = static_cast<int16_t>(strlen(bleStatus) * 12);
+        const int16_t statusX = static_cast<int16_t>((_width - statusW) / 2);
+        _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
+        _canvas.setCursor(statusX, statusY);
+        _canvas.print(bleStatus);
+
+        // Show the live connect sub-step under "CONNECTING..." so the multi-
+        // second link/Wi-Fi/live-view bring-up reads as forward progress.
+        if (displayed == Ui_Connecting) {
+            const int16_t stepW = static_cast<int16_t>(strlen(connectStep) * 12);
+            _canvas.setTextSize(2);
+            _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
+            _canvas.setCursor((_width - stepW) / 2, hintY);
+            _canvas.print(connectStep);
+        }
+    }
 }
 // Graphic helper to draw WiFi RSSI strength bars
 void DisplayUi::drawWifiIcon(int16_t x, int16_t y, int32_t rssi) {

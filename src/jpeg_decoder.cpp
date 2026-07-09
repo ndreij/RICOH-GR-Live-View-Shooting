@@ -35,6 +35,31 @@ bool JpegDecoder::begin() {
     return true;
 }
 
+bool JpegDecoder::ensureFrameSprite(int w, int h) {
+    if (w <= 0 || h <= 0) {
+        return false;
+    }
+    if (_frameReady && _frameW == w && _frameH == h) {
+        return true;
+    }
+    if (_frameReady) {
+        _frame.deleteSprite();
+        _frameReady = false;
+    }
+    _frame.setPsram(true);
+    _frame.setColorDepth(16);
+    if (_frame.createSprite(w, h) == nullptr) {
+        Serial.printf("JPEG decoder: frame sprite alloc failed (%dx%d); direct draw\n", w, h);
+        _frameW = 0;
+        _frameH = 0;
+        return false;
+    }
+    _frameW = w;
+    _frameH = h;
+    _frameReady = true;
+    return true;
+}
+
 bool JpegDecoder::drawFrame(LovyanGFX* dst, const uint8_t* data, size_t length) {
     if (data == nullptr || length < 4) {
         return setError("empty jpeg frame");
@@ -43,7 +68,7 @@ bool JpegDecoder::drawFrame(LovyanGFX* dst, const uint8_t* data, size_t length) 
         return setError("jpeg frame too large");
     }
 
-    _dst = dst != nullptr ? dst : &M5.Display;
+    LovyanGFX* canvas = dst != nullptr ? dst : &M5.Display;
     const uint32_t started = millis();
     activeDecoder = this;
 
@@ -63,38 +88,52 @@ bool JpegDecoder::drawFrame(LovyanGFX* dst, const uint8_t* data, size_t length) 
     const int divisor = scaleDivisorFromOption(scale);
     const int scaledW = (_lastWidth + divisor - 1) / divisor;
     const int scaledH = (_lastHeight + divisor - 1) / divisor;
-    _drawX = (_displayW - scaledW) / 2;
-    _drawY = (_displayH - scaledH) / 2;
 
-    // Clear only the letterbox/pillarbox area.  The decoded image may be smaller
-    // than the screen (quarter scale) or larger and clipped (half scale).  Without
-    // this, status text from the previous screen remains visible around the image.
-    const int16_t visibleX = _drawX < 0 ? 0 : _drawX;
-    const int16_t visibleY = _drawY < 0 ? 0 : _drawY;
-    const int16_t visibleW = min<int16_t>(_displayW, max<int16_t>(0, scaledW + min<int16_t>(_drawX, 0)));
-    const int16_t visibleH = min<int16_t>(_displayH, max<int16_t>(0, scaledH + min<int16_t>(_drawY, 0)));
-    if (visibleY > 0) {
-        _dst->fillRect(0, 0, _displayW, visibleY, COLOR_BLACK);
-    }
-    if (visibleY + visibleH < _displayH) {
-        _dst->fillRect(0, visibleY + visibleH, _displayW, _displayH - (visibleY + visibleH), COLOR_BLACK);
-    }
-    if (visibleX > 0) {
-        _dst->fillRect(0, visibleY, visibleX, visibleH, COLOR_BLACK);
-    }
-    if (visibleX + visibleW < _displayW) {
-        _dst->fillRect(visibleX + visibleW, visibleY, _displayW - (visibleX + visibleW), visibleH, COLOR_BLACK);
-    }
+    const int canvasW = canvas->width() > 0 ? canvas->width() : _displayW;
+    const int canvasH = canvas->height() > 0 ? canvas->height() : _displayH;
 
-    _dst->startWrite();
-    const int rc = _jpeg.decode(_drawX, _drawY, scale);
-    _dst->endWrite();
+    // Preferred path: decode into an off-screen sprite sized exactly to the
+    // scaled image, then push it to the canvas scaled to *fit* (contain) the
+    // screen. The whole uncropped frame is shown, as large as possible; a 4:3
+    // frame on the 16:9 LCD fills the full height with thin black side bars.
+    const bool useSprite = ensureFrameSprite(scaledW, scaledH);
+    int rc = 0;
+    if (useSprite) {
+        _dst = &_frame;
+        _dst->startWrite();
+        rc = _jpeg.decode(0, 0, scale);
+        _dst->endWrite();
+    } else {
+        // Fallback: decode centered directly onto the canvas (may letterbox).
+        _dst = canvas;
+        _drawX = (canvasW - scaledW) / 2;
+        _drawY = (canvasH - scaledH) / 2;
+        canvas->fillScreen(COLOR_BLACK);
+        canvas->startWrite();
+        rc = _jpeg.decode(_drawX, _drawY, scale);
+        canvas->endWrite();
+    }
     _jpeg.close();
     activeDecoder = nullptr;
 
     _lastDecodeMs = millis() - started;
     if (rc == 0) {
         return setError("JPEG decode failed");
+    }
+
+    if (useSprite) {
+        // Contain-fit: pick the smaller of the width/height ratios so the whole
+        // frame stays visible; the other axis is letterboxed. Clear the canvas
+        // first so the uncovered bars are black rather than stale pixels.
+        const float zoomX = static_cast<float>(canvasW) / static_cast<float>(scaledW);
+        const float zoomY = static_cast<float>(canvasH) / static_cast<float>(scaledH);
+        const float zoom = zoomX < zoomY ? zoomX : zoomY;
+        canvas->fillScreen(COLOR_BLACK);
+        _frame.setPivot(static_cast<float>(scaledW) / 2.0f, static_cast<float>(scaledH) / 2.0f);
+        _frame.pushRotateZoom(canvas,
+                              static_cast<float>(canvasW) / 2.0f,
+                              static_cast<float>(canvasH) / 2.0f,
+                              _rotationDeg, zoom, zoom);
     }
 
     _lastError = "ok";
@@ -139,6 +178,11 @@ int JpegDecoder::drawBlock(JPEGDRAW* draw) {
     int16_t drawW = static_cast<int16_t>(draw->iWidth);
     int16_t drawH = static_cast<int16_t>(draw->iHeight);
 
+    // Clip against the active draw target (the off-screen sprite while decoding,
+    // or the display canvas in the fallback path), not a fixed display size.
+    const int16_t targetW = static_cast<int16_t>(_dst->width());
+    const int16_t targetH = static_cast<int16_t>(_dst->height());
+
     if (dstX < 0) {
         srcX = -dstX;
         drawW -= srcX;
@@ -149,11 +193,11 @@ int JpegDecoder::drawBlock(JPEGDRAW* draw) {
         drawH -= srcY;
         dstY = 0;
     }
-    if (dstX + drawW > _displayW) {
-        drawW = _displayW - dstX;
+    if (dstX + drawW > targetW) {
+        drawW = targetW - dstX;
     }
-    if (dstY + drawH > _displayH) {
-        drawH = _displayH - dstY;
+    if (dstY + drawH > targetH) {
+        drawH = targetH - dstY;
     }
     if (drawW <= 0 || drawH <= 0) {
         return 1;

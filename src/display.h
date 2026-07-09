@@ -42,9 +42,15 @@ public:
     LovyanGFX* getCanvas() { return &_canvas; }
     void pushCanvas() { _canvas.pushSprite(&M5.Display, 0, 0); }
 
+    // Rotate the whole panel 180 when the stick is held upside down, so the
+    // status/boot/error screens flip along with the live preview.
+    void setFlipped(bool flipped);
+
 private:
     int16_t _width = DISPLAY_WIDTH;
     int16_t _height = DISPLAY_HEIGHT;
+    uint8_t _baseRotation = 1;
+    bool _flipped = false;
     M5Canvas _canvas;
 
     void clear(uint16_t color = 0x0000);

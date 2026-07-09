@@ -161,6 +161,20 @@ Result BleCameraService::openWifi() {
     return Result::success();
 }
 
+Result BleCameraService::powerOffCamera() {
+    Result ready = requireClient("powerOffCamera");
+    if (ready.failed()) {
+        publish(AppEventType::ErrorRaised, static_cast<int>(ready.code), "powerOffCamera");
+        return ready;
+    }
+    if (!_client->powerOffCamera()) {
+        publish(AppEventType::ErrorRaised, static_cast<int>(ErrorCode::Unknown), "powerOffCamera");
+        return Result::failure(ErrorCode::Unknown, _client->lastError());
+    }
+
+    return Result::success();
+}
+
 Result BleCameraService::readPowerState(RicohCameraPowerState& state) {
     Result ready = requireClient("readPowerState");
     if (ready.failed()) {
@@ -191,6 +205,27 @@ Result BleCameraService::readOperationMode(RicohCameraOperationMode& mode) {
         return Result::failure(ErrorCode::Unknown, _client->lastError());
     }
     return Result::success();
+}
+
+bool BleCameraService::probeOperationModeNoSecurity(const RicohBleDeviceInfo& info,
+                                                    RicohCameraOperationMode& mode) {
+    mode = RicohCameraOperationMode::Unknown;
+    if (_client == nullptr) {
+        return false;
+    }
+    return _client->probeOperationModeNoSecurity(info, mode);
+}
+
+bool BleCameraService::waitForCameraAwake(const RicohBleDeviceInfo& info,
+                                          uint32_t timeoutMs,
+                                          int* lastPowerBitOut) {
+    if (_client == nullptr) {
+        if (lastPowerBitOut != nullptr) {
+            *lastPowerBitOut = -1;
+        }
+        return false;
+    }
+    return _client->waitForCameraAwake(info, timeoutMs, lastPowerBitOut);
 }
 
 Result BleCameraService::enablePowerStateNotify() {

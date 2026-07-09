@@ -52,6 +52,31 @@ bool isPowerOffDisconnectReason(int reason) {
          reason == RICOH_BLE_DISCONNECT_REMOTE_POWER_OFF;
 }
 
+// NimBLE surfaces GAP disconnect/fail codes as 0x200 + <HCI error code>.
+// Decoding both the HCI code and which side initiated the teardown is the key
+// diagnostic Fable's review asked for: e.g. reason 534 = 0x216 = HCI 0x16 =
+// "Connection Terminated by LOCAL Host" -- our own stack aborting (most likely
+// on failed security re-establishment), NOT the camera refusing us and NOT a
+// connection-establishment failure (that would be HCI 0x3E => reason 574).
+const char* hciDisconnectReasonName(int reason) {
+  const int hci = reason - 0x200;
+  switch (hci) {
+    case 0x05: return "AuthFailure(local)";
+    case 0x08: return "SupervisionTimeout";
+    case 0x13: return "RemoteUserTerminated(remote)";
+    case 0x14: return "RemoteLowResources(remote)";
+    case 0x15: return "RemotePowerOff(remote)";
+    case 0x16: return "LocalHostTerminated(local)";
+    case 0x22: return "LmpResponseTimeout";
+    case 0x28: return "InstantPassed";
+    case 0x29: return "PairingUnitKeyUnsupported";
+    case 0x3B: return "UnacceptableConnParams";
+    case 0x3D: return "MicFailure";
+    case 0x3E: return "ConnEstablishmentFailed";
+    default: return "Other";
+  }
+}
+
 const char* ricohOperationModeName(RicohCameraOperationMode mode) {
   switch (mode) {
     case RicohCameraOperationMode::Capture:
@@ -169,6 +194,25 @@ RicohBleDeviceInfo infoFromAdvertisedDevice(const NimBLEAdvertisedDevice* device
   return info;
 }
 
+// Build identity info WITHOUT parsing the advertisement payload. Only reads
+// fixed members (address/type/rssi/connectable); never calls findAdvField().
+// findAdvField() intermittently faults on malformed/rotating adv data during
+// the camera-asleep reconnect storm (NimBLE crash, upstream issue #353 class),
+// so the known-camera reconnect path must avoid it entirely.
+RicohBleDeviceInfo minimalInfoFromAdvertisedDevice(const NimBLEAdvertisedDevice* device) {
+  RicohBleDeviceInfo info;
+  if (device == nullptr) {
+    return info;
+  }
+  info.found = true;
+  info.address = device->getAddress().toString().c_str();
+  info.addressType = device->getAddressType();
+  info.rssi = device->getRSSI();
+  info.connectable = device->isConnectable();
+  return info;
+}
+
+
 int candidateScore(const RicohBleDeviceInfo& info, const String& preferredAddress, const String& preferredName) {
   int score = 0;
   if (info.connectable) {
@@ -214,13 +258,38 @@ public:
       : _preferredAddress(preferredAddress), _preferredName(preferredName) {}
 
   void onDiscovered(const NimBLEAdvertisedDevice* device) override {
-    RicohBleDeviceInfo info = infoFromAdvertisedDevice(device);
+    // Address-only match; no payload parse needed.
+    RicohBleDeviceInfo info = minimalInfoFromAdvertisedDevice(device);
     if (addressMatches(info.address, _preferredAddress) && info.connectable) {
       updateBest(info, device);
     }
   }
 
   void onResult(const NimBLEAdvertisedDevice* device) override {
+    // Known-camera reconnect: cheaply match on the fixed address first, WITHOUT
+    // parsing the adv payload. Only when OUR camera's address matches do we
+    // parse its advertisement (needed downstream for the name/service readiness
+    // gate). Every other device in the environment is dropped untouched. During
+    // the camera-asleep scan storm the air is full of foreign adv reports; the
+    // old code ran String + NimBLEUUID allocations through findAdvField for each
+    // one, churning the heap until an advertised-device object was corrupted and
+    // findAdvField faulted (NimBLE issue #353 class). Parsing only our camera's
+    // handful of reports per scan removes that churn.
+    if (_preferredAddress.length() > 0) {
+      RicohBleDeviceInfo probe = minimalInfoFromAdvertisedDevice(device);
+      if (!addressMatches(probe.address, _preferredAddress)) {
+        return;
+      }
+      RicohBleDeviceInfo info = infoFromAdvertisedDevice(device);
+      updateBest(info, device);
+      if (info.connectable) {
+        _foundPreferred = true;
+      }
+      return;
+    }
+
+    // Discovery path (first-boot pairing, no bond yet): we must parse the
+    // advertisement to recognize a RICOH camera by service UUIDs / name.
     RicohBleDeviceInfo info = infoFromAdvertisedDevice(device);
     if (!isRicohCandidate(device, info, _preferredAddress, _preferredName)) {
       return;
@@ -252,6 +321,58 @@ private:
   RicohBleDeviceInfo _best;
   int _bestScore = -100000;
   bool _foundPreferred = false;
+};
+
+// P2 passive awake detector. Observe-only: for every address-matched report of
+// our camera, read the manufacturer-data last byte (the power bit proven by
+// P0-A: 0x00 asleep / 0x01 awake) and count consecutive AWAKE observations. When
+// the count reaches RICOH_BLE_AWAKE_ADVERT_DEBOUNCE the camera is confirmed awake.
+// No connect, no writes -- cannot wake the camera. Only onResult is used (the
+// completed-report callback, which under active scan carries the manufacturer
+// data, matching the P0-A "RSLT" stream); duplicate filter is disabled by the
+// caller so every advert is delivered.
+class RicohAwakeScanCallbacks : public NimBLEScanCallbacks {
+public:
+  explicit RicohAwakeScanCallbacks(const String& preferredAddress)
+      : _preferredAddress(preferredAddress) {}
+
+  void onResult(const NimBLEAdvertisedDevice* device) override {
+    if (device == nullptr || _awakeConfirmed) {
+      return;
+    }
+    RicohBleDeviceInfo probe = minimalInfoFromAdvertisedDevice(device);
+    if (!addressMatches(probe.address, _preferredAddress)) {
+      return;
+    }
+    if (!device->haveManufacturerData()) {
+      return;
+    }
+    const std::string mfg = device->getManufacturerData();
+    if (mfg.empty()) {
+      return;
+    }
+    const uint8_t powerBit = static_cast<uint8_t>(mfg.back());
+    _lastPowerBit = static_cast<int>(powerBit);
+    if (powerBit == RICOH_BLE_ADV_POWER_BIT_AWAKE) {
+      if (_consecutiveAwake < 255) {
+        ++_consecutiveAwake;
+      }
+      if (_consecutiveAwake >= RICOH_BLE_AWAKE_ADVERT_DEBOUNCE) {
+        _awakeConfirmed = true;
+      }
+    } else {
+      _consecutiveAwake = 0;
+    }
+  }
+
+  bool awakeConfirmed() const { return _awakeConfirmed; }
+  int lastPowerBit() const { return _lastPowerBit; }
+
+private:
+  const String& _preferredAddress;
+  uint8_t _consecutiveAwake = 0;
+  int _lastPowerBit = -1;
+  bool _awakeConfirmed = false;
 };
 
 String printableText(const std::vector<uint8_t>& data) {
@@ -555,7 +676,8 @@ volatile bool g_passkeyFirstCall = false;
 class RicohNimBleCallbacks : public NimBLEClientCallbacks {
 public:
   void onConnectFail(NimBLEClient*, int reason) override {
-    Serial.printf("BLE: connect failed reason=%d\n", reason);
+    Serial.printf("BLE: connect failed reason=%d (0x%03X, HCI 0x%02X %s)\n",
+                  reason, reason, reason - 0x200, hciDisconnectReasonName(reason));
   }
 
   void onDisconnect(NimBLEClient*, int reason) override {
@@ -563,7 +685,8 @@ public:
     if (isPowerOffDisconnectReason(reason)) {
       g_powerOffDisconnectReason.store(reason);
     }
-    Serial.printf("BLE: disconnected reason=%d\n", reason);
+    Serial.printf("BLE: disconnected reason=%d (0x%03X, HCI 0x%02X %s)\n",
+                  reason, reason, reason - 0x200, hciDisconnectReasonName(reason));
   }
 
   void onPassKeyEntry(NimBLEConnInfo& connInfo) override {
@@ -1098,6 +1221,73 @@ RicohBleDeviceInfo RicohBleClient::scanForCamera(const String& preferredAddress,
   return best;
 }
 
+bool RicohBleClient::waitForCameraAwake(const RicohBleDeviceInfo& info,
+                                        uint32_t timeoutMs,
+                                        int* lastPowerBitOut) {
+  if (lastPowerBitOut != nullptr) {
+    *lastPowerBitOut = -1;
+  }
+  begin();
+  if (info.address.length() == 0) {
+    _lastError = "awake-detect: no camera address";
+    return false;
+  }
+
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  RicohAwakeScanCallbacks callbacks(info.address);
+  scan->setScanCallbacks(&callbacks, false);
+  // Active scan so completed reports carry manufacturer data (matches the P0-A
+  // "RSLT" stream that proved the power bit); duplicate filter OFF so every
+  // advert is delivered for the consecutive-sample debounce.
+  scan->setActiveScan(true);
+  scan->setInterval(80);
+  scan->setWindow(79);
+  scan->setMaxResults(0);
+  scan->setDuplicateFilter(false);
+
+  if (!scan->start(0, false, true)) {  // duration 0 => until we stop it
+    scan->setScanCallbacks(nullptr, false);
+    scan->clearResults();
+    _lastError = "awake-detect: scan start failed";
+    return false;
+  }
+
+  const uint32_t startMs = millis();
+  bool awake = false;
+  while (scan->isScanning() && (millis() - startMs) < timeoutMs) {
+    if (g_serviceCallback != nullptr && g_serviceCallback()) {
+      break;  // aborted (e.g. BtnA / shutdown) -- treat as not-awake
+    }
+    if (callbacks.awakeConfirmed()) {
+      awake = true;
+      break;
+    }
+    delay(20);
+    yield();
+  }
+  if (scan->isScanning()) {
+    scan->stop();
+    delay(20);
+    yield();
+  }
+  scan->setScanCallbacks(nullptr, false);
+  scan->clearResults();
+
+  if (lastPowerBitOut != nullptr) {
+    *lastPowerBitOut = callbacks.lastPowerBit();
+  }
+
+  if (awake) {
+    _lastError = "";
+    Serial.printf("BLE: camera AWAKE via advertising (power bit=0x%02X) wait_ms=%lu\n",
+                  static_cast<unsigned>(RICOH_BLE_ADV_POWER_BIT_AWAKE),
+                  static_cast<unsigned long>(millis() - startMs));
+  } else {
+    _lastError = "awake-detect: not awake (camera still asleep or not advertising)";
+  }
+  return awake;
+}
+
 bool RicohBleClient::connect(const RicohBleDeviceInfo& info, uint32_t timeoutMs) {
   RicohBleConnectOptions options;
   options.timeoutMs = timeoutMs;
@@ -1150,12 +1340,15 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConne
   client->setClientCallbacks(&g_callbacks, false);
   client->setConnectTimeout(options.timeoutMs);
   client->setConnectRetries(1);
-  client->setConnectionParams(BLE_GAP_INITIAL_CONN_ITVL_MIN,
-                              BLE_GAP_INITIAL_CONN_ITVL_MAX,
+  client->setConnectionParams(BLE_CONN_ITVL_MIN_UNITS,
+                              BLE_CONN_ITVL_MAX_UNITS,
                               1,
                               2 * BLE_GAP_INITIAL_SUPERVISION_TIMEOUT);
 
-  if (!client->connect(peer, true, false, options.exchangeMtu)) {
+  // deleteAttributes: default true (fresh discovery). With reuseAttributes we
+  // pass false to keep the cached GATT table and skip re-discovery on reconnect.
+  const bool deleteAttributes = !options.reuseAttributes;
+  if (!client->connect(peer, deleteAttributes, false, options.exchangeMtu)) {
     const int err = client->getLastError();
     _lastFailureResourceExhausted = (err == BLE_HS_ENOMEM);
     _lastError = String("NimBLE connect failed err=") + String(err);
@@ -1173,6 +1366,17 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConne
 
   _connected = true;
   NimBLEDevice::setPowerLevel(ESP_PWR_LVL_P9);
+
+  // P0-B: lightweight probe path skips bonding/encryption entirely. We only need
+  // a read of the operation-mode characteristic; not initiating security avoids
+  // the rc=524 / reason-534 self-teardown seen during fast reconnect churn.
+  if (options.skipSecurity) {
+    _lastFailureResourceExhausted = false;
+    _lastError = "";
+    Serial.printf("BLE: connected (no-security probe) connect_ms=%lu\n",
+                  static_cast<unsigned long>(millis() - connectStartMs));
+    return true;
+  }
 
   const uint32_t securityStartMs = millis();
   bool securityStarted = client->secureConnection(true);
@@ -1212,6 +1416,9 @@ bool RicohBleClient::connect(const RicohBleDeviceInfo& info, const RicohBleConne
 #if RICOH_BLE_GATT_DUMP_ON_CONNECT
   logGattTable(client);
 #endif
+  // Warm the shutter characteristics now (link is up and encrypted) so the
+  // first shutter press is not delayed by on-demand GATT discovery.
+  prewarmShutter();
   return true;
 }
 
@@ -1256,6 +1463,31 @@ bool RicohBleClient::openWifi() {
   Serial.printf("BLE: Wi-Fi open requested (handle=0x%04X value=0x%02X)\n",
                 RICOH_BLE_WLAN_POWER_HANDLE,
                 RICOH_BLE_WLAN_ON_VALUE);
+  return true;
+}
+
+bool RicohBleClient::powerOffCamera() {
+  NimBLEClient* client = static_cast<NimBLEClient*>(_client);
+  if (!isConnected() || client == nullptr) {
+    _lastError = "BLE not connected";
+    return false;
+  }
+
+  if (RICOH_BLE_POWER_STATE_HANDLE == 0) {
+    _lastError = "Power state handle not configured — check serial GATT dump for GR IIIx values";
+    return false;
+  }
+  const uint8_t payload[] = {RICOH_BLE_POWER_STATE_OFF_VALUE};
+  String err;
+  if (!writeHandleWithResponse(client, RICOH_BLE_POWER_STATE_HANDLE, payload, sizeof(payload), err)) {
+    _lastError = err;
+    return false;
+  }
+
+  _lastError = "";
+  Serial.printf("BLE: camera power-off requested (handle=0x%04X value=0x%02X)\n",
+                RICOH_BLE_POWER_STATE_HANDLE,
+                RICOH_BLE_POWER_STATE_OFF_VALUE);
   return true;
 }
 
@@ -1355,6 +1587,54 @@ bool RicohBleClient::readOperationMode(RicohCameraOperationMode& mode) {
   return true;
 }
 
+bool RicohBleClient::probeOperationModeNoSecurity(const RicohBleDeviceInfo& info,
+                                                  RicohCameraOperationMode& mode) {
+  begin();
+  mode = RicohCameraOperationMode::Unknown;
+  clearDisconnectReason();
+
+  RicohBleConnectOptions options;
+  options.timeoutMs = BLE_FAST_CONNECT_TIMEOUT_MS;
+  options.preConnectDelayMs = 0;
+  options.exchangeMtu = false;   // skip MTU exchange -- one less round trip
+  // Discover services synchronously inside connect() (deleteAttributes=true),
+  // NOT on-demand. A sleeping GR IIIx drops the link (supervision timeout,
+  // reason 0x208) if we defer discovery to the first read -- the secured path
+  // proved connect-time discovery completes reliably even while asleep.
+  options.reuseAttributes = false;
+  options.skipSecurity = true;    // the whole point: no bonding/encryption
+
+  const uint32_t t0 = millis();
+  const bool linked = connect(info, options);
+  const uint32_t tConnected = millis();
+  if (!linked) {
+    Serial.printf("BLE PROBE: connect failed after %lums err=%s\n",
+                  static_cast<unsigned long>(tConnected - t0), _lastError.c_str());
+    disconnect();
+    return false;
+  }
+
+  const bool readOk = readOperationMode(mode);
+  const uint32_t tRead = millis();
+  const int disconnectReason = consumeDisconnectReason();
+  disconnect();
+  const uint32_t tDone = millis();
+
+  Serial.printf("BLE PROBE: connect_ms=%lu read_ms=%lu total_ms=%lu read_ok=%d mode=%s%s\n",
+                static_cast<unsigned long>(tConnected - t0),
+                static_cast<unsigned long>(tRead - tConnected),
+                static_cast<unsigned long>(tDone - t0),
+                readOk ? 1 : 0,
+                ricohOperationModeName(mode),
+                readOk ? "" : (String(" err=") + _lastError).c_str());
+  if (disconnectReason != 0) {
+    Serial.printf("BLE PROBE: mid-probe disconnect reason=%d (0x%03X, HCI 0x%02X %s)\n",
+                  disconnectReason, disconnectReason, disconnectReason - 0x200,
+                  hciDisconnectReasonName(disconnectReason));
+  }
+  return readOk;
+}
+
 bool RicohBleClient::enablePowerStateNotify() {
   NimBLEClient* client = static_cast<NimBLEClient*>(_client);
   if (!isConnected() || client == nullptr) {
@@ -1443,6 +1723,50 @@ bool RicohBleClient::waitForWifiCredentials(RicohBleWifiCredentials& credentials
   return false;
 }
 
+bool RicohBleClient::ensureShootingCharacteristics(String& errorOut) {
+  if (_shootingFlavorChar != nullptr && _operationRequestChar != nullptr) {
+    errorOut = "";
+    return true;  // already cached for this connection
+  }
+
+  NimBLEClient* client = static_cast<NimBLEClient*>(_client);
+  if (!isConnected() || client == nullptr) {
+    errorOut = "BLE not connected";
+    return false;
+  }
+
+  // getService() / getCharacteristic() perform the one-off GATT discovery the
+  // first time they are called on a connection; caching the results here keeps
+  // that cost off the first shutter press.
+  NimBLERemoteService* shootingService = client->getService(NimBLEUUID(RICOH_BLE_SHOOTING_SERVICE_UUID));
+  NimBLERemoteCharacteristic* shootingFlavor =
+      writableCharacteristic(shootingService, RICOH_BLE_SHOOTING_FLAVOR_UUID, "ShootingFlavor", errorOut);
+  if (shootingFlavor == nullptr) {
+    return false;
+  }
+  NimBLERemoteCharacteristic* operationRequest =
+      writableCharacteristic(shootingService, RICOH_BLE_OPERATION_REQUEST_UUID, "OperationRequest", errorOut);
+  if (operationRequest == nullptr) {
+    return false;
+  }
+
+  _shootingFlavorChar = shootingFlavor;
+  _operationRequestChar = operationRequest;
+  errorOut = "";
+  return true;
+}
+
+void RicohBleClient::prewarmShutter() {
+  String err;
+  const uint32_t startMs = millis();
+  if (ensureShootingCharacteristics(err)) {
+    Serial.printf("BLE: shutter characteristics pre-warmed in %lums\n",
+                  static_cast<unsigned long>(millis() - startMs));
+  } else {
+    Serial.printf("BLE: shutter pre-warm skipped: %s\n", err.c_str());
+  }
+}
+
 bool RicohBleClient::shoot(bool autofocus) {
   NimBLEClient* client = static_cast<NimBLEClient*>(_client);
   if (!isConnected() || client == nullptr) {
@@ -1453,22 +1777,16 @@ bool RicohBleClient::shoot(bool autofocus) {
   // RICOH GR uses a single capture operation instead of a generic
   // half-press/full-press/release characteristic.  Keep this aligned with the
   // furble Ricoh implementation: ShootingFlavor=IMMEDIATE, then
-  // OperationRequest={START, AF|NO_AF}.  There is no release write.
-  NimBLERemoteService* shootingService = client->getService(NimBLEUUID(RICOH_BLE_SHOOTING_SERVICE_UUID));
+  // OperationRequest={START, AF|NO_AF}.  There is no release write.  The
+  // characteristics are resolved once and cached (see prewarmShutter) so the
+  // first press is not delayed by GATT discovery.
   String err;
-  NimBLERemoteCharacteristic* shootingFlavor =
-      writableCharacteristic(shootingService, RICOH_BLE_SHOOTING_FLAVOR_UUID, "ShootingFlavor", err);
-  if (shootingFlavor == nullptr) {
+  if (!ensureShootingCharacteristics(err)) {
     _lastError = err;
     return false;
   }
-
-  NimBLERemoteCharacteristic* operationRequest =
-      writableCharacteristic(shootingService, RICOH_BLE_OPERATION_REQUEST_UUID, "OperationRequest", err);
-  if (operationRequest == nullptr) {
-    _lastError = err;
-    return false;
-  }
+  NimBLERemoteCharacteristic* shootingFlavor = static_cast<NimBLERemoteCharacteristic*>(_shootingFlavorChar);
+  NimBLERemoteCharacteristic* operationRequest = static_cast<NimBLERemoteCharacteristic*>(_operationRequestChar);
 
   const uint8_t flavorPayload[] = {RICOH_SHOOTING_FLAVOR_IMMEDIATE};
   if (!writeCharacteristicValue(shootingFlavor, flavorPayload, sizeof(flavorPayload), "ShootingFlavor", err)) {
@@ -1505,6 +1823,9 @@ void RicohBleClient::disconnect() {
   }
   _client = nullptr;
   _connected = false;
+  // These point into the now-deleted client's attribute table.
+  _shootingFlavorChar = nullptr;
+  _operationRequestChar = nullptr;
 }
 
 int RicohBleClient::consumeDisconnectReason() {

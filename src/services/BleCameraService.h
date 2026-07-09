@@ -36,8 +36,15 @@ public:
 
     Result shoot(bool autofocus = true);
     Result openWifi();
+    Result powerOffCamera();
     Result readPowerState(RicohCameraPowerState& state);
     Result readOperationMode(RicohCameraOperationMode& mode);
+    // P0-B diagnostic pass-through: lightweight no-security operation-mode probe.
+    bool probeOperationModeNoSecurity(const RicohBleDeviceInfo& info,
+                                      RicohCameraOperationMode& mode);
+    // P2 passive awake detector pass-through (observe-only; never wakes camera).
+    bool waitForCameraAwake(const RicohBleDeviceInfo& info, uint32_t timeoutMs,
+                            int* lastPowerBitOut = nullptr);
     Result enablePowerStateNotify();
     bool consumePowerOffNotification();
     Result waitForWifiCredentials(RicohBleWifiCredentials& credentials, uint32_t timeoutMs);
