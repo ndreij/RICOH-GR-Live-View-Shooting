@@ -166,7 +166,7 @@ Customize these constants in [src/config.h](file:///C:/Users/Administrator/Docum
 
 ## RICOH GR IIIx Support (Experimental)
 
-The GR IIIx runs the **full Wi-Fi LiveView flow** — screen preview plus BLE remote shutter — verified on real hardware on 2026-07-08 (steady ~5 fps MJPEG preview, shutter firing during preview).
+The GR IIIx runs the **full Wi-Fi LiveView flow** — screen preview plus BLE remote shutter — verified on real hardware on 2026-07-08 (shutter firing during preview). The `m5stack-sticks3-gr3x` build environment defaults to **quarter-scale** JPEG decoding (`JPEG_SCALE_QUARTER`), measured at roughly **9 fps** on real hardware (vs. ~4.6 fps at half-scale). The decoder renders the quarter-scale frame at its full original 4:3 aspect ratio (contain-fit), leaving thin black bars on the 16:9 screen rather than cropping any of the image.
 
 **How Wi-Fi is enabled:** the GR IIIx exposes a completely different GATT layout from the GR IV. It has none of the GR IV's `0x0135`-range WLAN characteristics; instead its WLAN service (`F37F568F-...`) exposes a **Network Type** characteristic (`9111CDD0-...`, handle `0x00F0`). Writing `0x01` to it switches the camera into Wi-Fi AP mode. The SSID (`0x00F3`) and passphrase (`0x00F5`) are static read/write values, read over BLE and used to bring up the STA link — the same MJPEG LiveView path as the GR IV from there. The shutter path is UUID-based and works in parallel.
 
@@ -246,7 +246,24 @@ BLE guard: remote disconnect reason=533; auto wake paused for 15s, then manual w
 ```
 *(The firmware shuts down connection elements, blocks automatic wake, and goes quiet)*
 
-### 3. Watchdog Recovery on Stalled LiveView
+### 3. Camera Powered Off Mid-Session (Immediate Detection)
+```text
+BLE: disconnect reason=531 (0x213 RemoteUserTerminated)
+BLE: reconnect refused by camera (reason=531 0x213) -> camera off, entering guard
+BLE guard: remote disconnect reason=531; idle until user powers camera on + presses BtnA
+Flow: LIVEVIEW_RUNNING -> CAMERA_SLEEP_GUARD (reconnect refused -- camera off)
+```
+*(When the camera is switched off mid-session, its BLE layer reliably tears down the link with reason 531/533 within about 1.5 seconds. The firmware treats that as immediate proof the camera is off and enters the guard right away, showing "Camera off" instantly instead of letting a Wi-Fi attempt run to its full timeout (up to 15s) or flickering between "Connecting..." and "Camera off".)*
+
+While idling in the guard, you'll also periodically see lines like these in the serial log — this is normal passive polling, not an error:
+```text
+AUTO: camera advertising AWAKE (bit=0x01) -> confirming via no-security probe
+BLE PROBE: connect_ms=180 read_ms=25 total_ms=210 read_ok=1 mode=Other
+AUTO: probe did not confirm CAPTURE (probed=1 mode=3) -- keep waiting
+```
+*(The camera's advertising power bit can keep reporting "awake" for a while after it's actually switched off, so the firmware runs a brief read-only no-security probe every few seconds to check the real Operation Mode. It requires 2 consecutive CAPTURE reads before trusting it and waking the full connect flow, which filters out transient noise right after power-off.)*
+
+### 4. Watchdog Recovery on Stalled LiveView
 ```text
 SystemSupervisor: checking preview health...
 SystemSupervisor: liveview last frame time 5200 ms ago, threshold is 5000 ms

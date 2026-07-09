@@ -165,7 +165,7 @@ graph TD
 
 ## RICOH GR IIIx 支持（实验性）
 
-理光 GR IIIx 现已支持 **完整的 Wi-Fi LiveView 实时取景**（屏幕预览 + BLE 遥控快门），并于 2026-07-08 在真实硬件上验证通过（约 5 fps 稳定 MJPEG 预览，预览过程中可触发快门）。
+理光 GR IIIx 现已支持 **完整的 Wi-Fi LiveView 实时取景**（屏幕预览 + BLE 遥控快门），并于 2026-07-08 在真实硬件上验证通过（预览过程中可触发快门）。`m5stack-sticks3-gr3x` 编译环境默认使用 **1/4 缩放**解码 JPEG（`JPEG_SCALE_QUARTER`），实机测得约 **9 fps**（1/2 缩放约 4.6 fps），解码器会将 1/4 缩放后的画面按原始 4:3 比例整帧显示，在 16:9 屏幕上下留出细黑边，不裁切画面内容。
 
 **Wi-Fi 如何开启：** GR IIIx 的 GATT 布局与 GR IV 完全不同，没有 GR IV 的 `0x0135` 系列 WLAN 特征值；其 WLAN 服务（`F37F568F-...`）改为提供 **Network Type** 特征值（`9111CDD0-...`，句柄 `0x00F0`）。向其写入 `0x01` 即可将相机切换到 Wi-Fi 热点（AP）模式。SSID（`0x00F3`）与密码（`0x00F5`）为静态可读写值，经 BLE 读取后用于建立 STA 连接，此后即复用与 GR IV 相同的 MJPEG LiveView 链路。快门链路基于 UUID 实现，可并行工作。
 
@@ -245,7 +245,24 @@ BLE guard: remote disconnect reason=533; auto wake paused for 15s, then manual w
 ```
 *(此时固件自动断开并挂起，不唤醒相机，防止电池被不必要地消耗)*
 
-### 3. 故障恢复：LiveView 无效帧卡死 (SystemSupervisor 自动介入)
+### 3. 拍摄途中相机被关闭（立即识别，不再停留 "Connecting"）
+```text
+BLE: disconnect reason=531 (0x213 RemoteUserTerminated)
+BLE: reconnect refused by camera (reason=531 0x213) -> camera off, entering guard
+BLE guard: remote disconnect reason=531; idle until user powers camera on + presses BtnA
+Flow: LIVEVIEW_RUNNING -> CAMERA_SLEEP_GUARD (reconnect refused -- camera off)
+```
+*(相机在直播过程中被关闭时，其 BLE 层通常会在约 1.5 秒内以 reason=531/533 主动断开链路；固件据此立即进入保护态并显示 "Camera off"，不会再像早期版本那样把开 Wi-Fi 尝试跑到超时（最长 15 秒）或在 "Connecting..." / "Camera off" 之间反复跳动。)*
+
+保护态期间，串口日志中还会周期性出现下面这类内容，属于正常的静默轮询，并非异常：
+```text
+AUTO: camera advertising AWAKE (bit=0x01) -> confirming via no-security probe
+BLE PROBE: connect_ms=180 read_ms=25 total_ms=210 read_ok=1 mode=Other
+AUTO: probe did not confirm CAPTURE (probed=1 mode=3) -- keep waiting
+```
+*(相机关机后，其广播中的电源位可能仍会显示"唤醒"一段时间，因此固件每隔几秒发起一次只读的 no-security 探测来确认相机真实的 Operation Mode；必须连续 2 次读到 CAPTURE 才会真正唤醒完整连接流程，避免刚关机时的瞬时噪声误触发重连。)*
+
+### 4. 故障恢复：LiveView 无效帧卡死 (SystemSupervisor 自动介入)
 ```text
 SystemSupervisor: checking preview health...
 SystemSupervisor: liveview last frame time 5200 ms ago, threshold is 5000 ms
