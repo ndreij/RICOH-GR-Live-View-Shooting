@@ -1460,32 +1460,47 @@ bool previewStreamRunningForController() {
 }
 
 bool readAndProcessLiveViewFrameForController() {
-  const int readLen = wifiPreview.readFrame(streamReadBuffer, sizeof(streamReadBuffer));
-  if (readLen > 0) {
-    lastLiveViewActivityAt = millis();
-    liveViewReadErrorSince = 0;  // healthy stream; clear any pending grace
-    wifiPreview.processFrameData(streamReadBuffer, static_cast<size_t>(readLen));
-    return true;
-  }
-  if (readLen < 0) {
-    // Capturing a photo briefly interrupts the HTTP LiveView stream. Rather than
-    // tear the stream down (which blanks the preview), hold the last decoded
-    // frame and keep trying for a short grace period. onJpegFrame only pushes on
-    // a successful decode, so the last good frame stays on screen meanwhile.
-    const uint32_t now = millis();
-    if (liveViewReadErrorSince == 0) {
-      liveViewReadErrorSince = now;
+  // Drain the socket within this single tick instead of reading one chunk and
+  // waiting for the next loop() delay(1). The camera's MJPEG stream is
+  // consumer-paced over TCP, so pulling every buffered chunk here lets a full
+  // JPEG frame accumulate immediately rather than one read per tick. We stop as
+  // soon as a frame is decoded (onJpegFrame bumps decodedFrames) to yield back
+  // to button/UI servicing, and STREAM_MAX_READS_PER_TICK caps a pathological
+  // never-completing frame. This raises fps toward the decode/render ceiling
+  // (~50ms/frame) instead of throttling frame accumulation to the tick rate.
+  const uint32_t framesBefore = decodedFrames;
+  for (uint8_t reads = 0; reads < STREAM_MAX_READS_PER_TICK; ++reads) {
+    const int readLen = wifiPreview.readFrame(streamReadBuffer, sizeof(streamReadBuffer));
+    if (readLen > 0) {
+      lastLiveViewActivityAt = millis();
+      liveViewReadErrorSince = 0;  // healthy stream; clear any pending grace
+      wifiPreview.processFrameData(streamReadBuffer, static_cast<size_t>(readLen));
+      if (decodedFrames != framesBefore) {
+        return true;  // completed a frame this tick -> yield to the loop
+      }
+      continue;  // frame still accumulating; keep draining buffered bytes
     }
-    if (now - liveViewReadErrorSince >= LIVEVIEW_READ_ERROR_GRACE_MS) {
-      Serial.printf("LiveView: read failed for %lums: %s\n",
-                    static_cast<unsigned long>(now - liveViewReadErrorSince),
-                    wifiPreview.lastError().c_str());
-      liveViewReadErrorSince = 0;
-      return false;  // persistent failure -> let the controller reconnect
+    if (readLen < 0) {
+      // Capturing a photo briefly interrupts the HTTP LiveView stream. Rather
+      // than tear the stream down (which blanks the preview), hold the last
+      // decoded frame and keep trying for a short grace period. onJpegFrame only
+      // pushes on a successful decode, so the last good frame stays on screen.
+      const uint32_t now = millis();
+      if (liveViewReadErrorSince == 0) {
+        liveViewReadErrorSince = now;
+      }
+      if (now - liveViewReadErrorSince >= LIVEVIEW_READ_ERROR_GRACE_MS) {
+        Serial.printf("LiveView: read failed for %lums: %s\n",
+                      static_cast<unsigned long>(now - liveViewReadErrorSince),
+                      wifiPreview.lastError().c_str());
+        liveViewReadErrorSince = 0;
+        return false;  // persistent failure -> let the controller reconnect
+      }
+      return true;  // transient (likely capture hiccup) -> hold last frame
     }
-    return true;  // transient (likely capture hiccup) -> hold last frame
+    // readLen == 0: socket drained for now (normal between frames / brief pause).
+    break;
   }
-  // readLen == 0: no data available yet (normal between frames / brief pause).
   return true;
 }
 

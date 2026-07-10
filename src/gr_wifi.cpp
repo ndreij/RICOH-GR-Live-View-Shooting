@@ -78,7 +78,11 @@ bool parseBssid(const char* text, uint8_t out[6]) {
 void GrWifi::begin() {
   WiFi.mode(WIFI_STA);
   // BLE + Wi-Fi coexistence on ESP32-S3 requires modem sleep. Disabling it
-  // after BLE has been started can abort inside the Wi-Fi stack.
+  // after BLE has been started aborts inside the Wi-Fi stack (verified
+  // 2026-07-10: WiFi.setSleep(false) here boot-loops with abort() on core 1).
+  // The single shared radio means the ~100ms modem-sleep beacon cadence that
+  // paces live view to ~9.5fps is an unavoidable cost of keeping BLE connected
+  // for the shutter/power-state link during streaming.
   WiFi.setSleep(true);
   WiFi.setAutoReconnect(true);
   _lastStatus = WiFi.status();

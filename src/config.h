@@ -23,6 +23,16 @@ constexpr size_t FRAME_BUFFER_SIZE = 256 * 1024;
 // hardware before tuning further.
 constexpr size_t STREAM_READ_BUFFER_SIZE = 8192;
 
+// Upper bound on read()+process() iterations per LiveView tick. MJPEG over the
+// camera's HTTP stream is consumer-paced (TCP backpressure), so we drain every
+// buffered chunk within a single tick until one full JPEG frame completes
+// instead of reading just once per loop() and waiting for the next delay(1).
+// That lifts the frame rate up to the decode/render ceiling rather than
+// throttling frame *accumulation* to the loop tick rate. This cap is only a
+// safety valve against a pathological never-completing frame; in steady state
+// the drain loop exits early when the socket is empty or a frame is rendered.
+constexpr uint8_t STREAM_MAX_READS_PER_TICK = 16;
+
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 constexpr uint32_t WIFI_CHANNEL_HINT_CONNECT_TIMEOUT_MS = 6000;
 constexpr uint32_t WIFI_CACHED_CONNECT_TIMEOUT_MS = 1200;

@@ -165,7 +165,7 @@ graph TD
 
 ## RICOH GR IIIx 支持（实验性）
 
-理光 GR IIIx 现已支持 **完整的 Wi-Fi LiveView 实时取景**（屏幕预览 + BLE 遥控快门），并于 2026-07-08 在真实硬件上验证通过（预览过程中可触发快门）。`m5stack-sticks3-gr3x` 编译环境默认使用 **1/4 缩放**解码 JPEG（`JPEG_SCALE_QUARTER`），实机测得约 **9 fps**（1/2 缩放约 4.6 fps），解码器会将 1/4 缩放后的画面按原始 4:3 比例整帧显示，在 16:9 屏幕上下留出细黑边，不裁切画面内容。
+理光 GR IIIx 现已支持 **完整的 Wi-Fi LiveView 实时取景**（屏幕预览 + BLE 遥控快门），并于 2026-07-08 在真实硬件上验证通过（预览过程中可触发快门）。`m5stack-sticks3-gr3x` 编译环境默认使用 **1/4 缩放**解码 JPEG（`JPEG_SCALE_QUARTER`），实机测得约 **9 fps**（1/2 缩放约 4.6 fps），解码器会将 1/4 缩放后的画面按原始 4:3 比例整帧显示，在 16:9 屏幕上下留出细黑边，不裁切画面内容。这约 9 fps 是硬件上限，并非解码/渲染瓶颈：固件会渲染相机发来的每一帧（丢帧数为 0），每帧仍有约 50 ms 的 CPU 余量，真正的限制是入站帧节奏——它受制于约 100 ms 的 Wi-Fi modem-sleep 信标周期，而 ESP32-S3 单天线上的 BLE + Wi-Fi 共存又必须开启 modem sleep。关闭 modem sleep 会导致 Wi-Fi 协议栈 abort（2026-07-10 已验证），因此在不放弃 BLE 快门/电源链路的前提下无法进一步提高帧率。
 
 **Wi-Fi 如何开启：** GR IIIx 的 GATT 布局与 GR IV 完全不同，没有 GR IV 的 `0x0135` 系列 WLAN 特征值；其 WLAN 服务（`F37F568F-...`）改为提供 **Network Type** 特征值（`9111CDD0-...`，句柄 `0x00F0`）。向其写入 `0x01` 即可将相机切换到 Wi-Fi 热点（AP）模式。SSID（`0x00F3`）与密码（`0x00F5`）为静态可读写值，经 BLE 读取后用于建立 STA 连接，此后即复用与 GR IV 相同的 MJPEG LiveView 链路。快门链路基于 UUID 实现，可并行工作。
 
