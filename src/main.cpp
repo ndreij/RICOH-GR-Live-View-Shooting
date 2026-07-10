@@ -1046,12 +1046,20 @@ bool runBleDiscoveryAtBoot() {
       return false;
     }
     if (!info.found) {
-      showStatusIfChanged("BLE not found", "Retrying...", "", "", true);
+      // During pairing, keep the steady "Enable pairing on camera" prompt on
+      // screen. The top-of-loop "Pairing GR BLE" status (Ui_Pairing) is still
+      // showing; overwriting it with these transient scan-retry lines is what
+      // made the pairing prompt flicker to "Connecting..." between rounds.
+      if (!firstBootPairing) {
+        showStatusIfChanged("BLE not found", "Retrying...", "", "", true);
+      }
     } else if (!info.connectable) {
       Serial.printf("BLE: scan selected non-connectable candidate name='%s' addr=%s; retrying\n",
                     info.name.c_str(),
                     info.address.c_str());
-      showStatusIfChanged("BLE not connectable", info.address, "Retrying...", "", true);
+      if (!firstBootPairing) {
+        showStatusIfChanged("BLE not connectable", info.address, "Retrying...", "", true);
+      }
     } else if (shouldDelayStoredIdentityPowerProbe(info, firstBootPairing)) {
       Serial.printf("BLE: skipping standby power probe for %lums addr=%s name='%s'\n",
                     static_cast<unsigned long>(cameraPowerProbeBackoffRemainingMs()),
@@ -1073,7 +1081,12 @@ bool runBleDiscoveryAtBoot() {
     } else {
       const String connectedName = displayBleName(info);
 
-      showStatusIfChanged("BLE camera found", connectedName, info.address, "Connecting...", true);
+      // During pairing the passkey-entry screen takes over almost immediately
+      // once the connect/security handshake begins, so skip this brief
+      // "Connecting..." status and keep the pairing prompt steady until then.
+      if (!firstBootPairing) {
+        showStatusIfChanged("BLE camera found", connectedName, info.address, "Connecting...", true);
+      }
       setCameraFlowState(CameraFlowState::ConnectingBle, "BLE scan candidate");
       RicohBleConnectOptions options;
       options.timeoutMs = BLE_CONNECT_TIMEOUT_MS;
@@ -1143,7 +1156,9 @@ bool runBleDiscoveryAtBoot() {
                               RICOH_BLE_DISCONNECT_REMOTE_POWER_OFF);
         return false;
       }
-      showStatusIfChanged("BLE connect failed", bleCamera.lastError(), "Retrying...", "", true);
+      if (!firstBootPairing) {
+        showStatusIfChanged("BLE connect failed", bleCamera.lastError(), "Retrying...", "", true);
+      }
       bleCamera.disconnect();
       if (bleCamera.lastFailureWasResourceExhausted()) {
         Serial.println("BLE: host resources exhausted during connect; reset stack before retry");
@@ -1178,7 +1193,12 @@ bool runBleDiscoveryAtBoot() {
     }
   }
 
-  showStatusIfChanged("BLE unavailable", "Return BLE scan", preferredBleName(), "", true);
+  // When pairing exhausts its round budget the main loop immediately restarts
+  // discovery, which re-asserts the pairing prompt -- so don't flash this
+  // transient "BLE unavailable" line in between.
+  if (!firstBootPairing) {
+    showStatusIfChanged("BLE unavailable", "Return BLE scan", preferredBleName(), "", true);
+  }
   setCameraFlowState(CameraFlowState::BleScan, "BLE attempts exhausted");
   // Full attempt budget exhausted -- clear any leaked NimBLEClient objects before
   // falling back to BleScan so the next round starts from a clean slate.
@@ -1406,8 +1426,10 @@ bool shootAutofocusForController() {
   if (!wifiPreview.isPreviewRunning()) {
     showStatusIfChanged("Button A shutter", "Shooting...", cameraProps.model, cameraProps.battery, true);
   } else {
-    // Hold the current live frame across the exposure so the camera's black
-    // capture frames never blink onto the screen.
+    // Hold the current live frame across most of the exposure, then let it go:
+    // the freeze is shorter than the camera's full blackout on purpose, so a
+    // couple of the camera's own black frames peek through right at the end
+    // as brief "shutter fired" visual feedback (see PREVIEW_CAPTURE_FREEZE_MS).
     previewFreezeUntil = millis() + PREVIEW_CAPTURE_FREEZE_MS;
   }
   const rvf::Result shootResult = bleCamera.shoot(true);
@@ -1910,7 +1932,18 @@ void serviceAutoProbeIfDue() {
     return;  // honor post-power-off cooldown (ignore dying-gasp adverts)
   }
   if (cameraProfile.bleAddress.length() == 0) {
-    return;  // no saved identity to listen for; BtnA manual wake still works
+    // No saved identity (e.g. right after a clean install / pairing reset) --
+    // there is no address to passively match adverts against, so the
+    // awake-scan below can never run and firstAwakeScanDone would never get
+    // set. Without this, the screen is stuck on the "Checking camera"
+    // transient forever. Settle straight to the actionable "Camera off" /
+    // "Hold 3s to pair" screen instead; BtnA manual wake and the hold-to-pair
+    // gesture both still work from here.
+    if (!firstAwakeScanDone) {
+      firstAwakeScanDone = true;
+      showCameraSleepGuardStatus(true);
+    }
+    return;
   }
 
   const uint32_t now = millis();
@@ -1927,6 +1960,21 @@ void serviceAutoProbeIfDue() {
 
   int powerBit = -1;
   const bool awake = bleCamera.waitForCameraAwake(info, RICOH_BLE_AWAKE_SCAN_WINDOW_MS, &powerBit);
+
+  // waitForCameraAwake() blocks the main loop for up to RICOH_BLE_AWAKE_SCAN_WINDOW_MS
+  // per call, and runs almost back-to-back while idling on this screen (its own
+  // window dwarfs RICOH_BLE_AUTO_PROBE_INTERVAL_MS -- see that constant's comment).
+  // Buttons are polled INSIDE that blocking scan via serviceButtonsDuringBleOperation
+  // (the g_serviceCallback wired to it), which on a held BtnA/KEY2 sets
+  // key2PairingResetRequested and aborts the scan early (reported here as
+  // awake=false, indistinguishable from "still asleep"). Without this check the
+  // hold-to-pair request would be silently dropped on the floor every time it fired
+  // while sitting on the "Camera off" screen -- exactly the state the "HOLD 3S TO
+  // PAIR" hint is shown on. Handle it before the still-asleep early return below.
+  if (resetBlePairingIfRequested()) {
+    return;
+  }
+
   // First scan completed: we now know the camera's state, so let the idle status
   // settle from the "Checking camera" transient onto "Camera off".
   if (!firstAwakeScanDone) {

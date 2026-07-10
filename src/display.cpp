@@ -201,21 +201,40 @@ void DisplayUi::showError(const String& message, const String& detail) {
 void DisplayUi::showPasskeyEntry(const uint8_t digits[6], uint8_t pos) {
     clear(COLOR_BG);
 
-    // Single title, same size as the status screen — no other small text.
+    // Same row height/gap as the status screen's title/status/hint block, so
+    // this screen's title -> hint spacing reads consistently with the rest of
+    // the UI instead of using a one-off layout.
+    constexpr int16_t kRowH = 16;   // textSize(2) glyph height
+    constexpr int16_t kRowGap = 12;
+    const int16_t titleY = 14;
+    const int16_t hintY = static_cast<int16_t>(titleY + kRowH + kRowGap);
+
+    // Title, same size as the status screen.
     _canvas.setTextSize(2);
     _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
     const char* title = "ENTER CODE";
     const int16_t titleW = static_cast<int16_t>(strlen(title) * 12);
-    _canvas.setCursor((_width - titleW) / 2, 14);
+    _canvas.setCursor((_width - titleW) / 2, titleY);
     _canvas.print(title);
 
-    // Six digit cells, centered.
+    // One-line reminder of the button gesture, directly under the title: a
+    // tap cycles the active digit through 0-9, a hold locks it in and
+    // advances to the next one (see PASSKEY_ADVANCE_HOLD_MS). Same text size
+    // as the title and every other screen (size 2) for visual consistency.
+    _canvas.setTextSize(2);
+    _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
+    const char* gestureHint = "TAP=NUM HOLD=NEXT";
+    const int16_t gestureHintW = static_cast<int16_t>(strlen(gestureHint) * 12);
+    _canvas.setCursor((_width - gestureHintW) / 2, hintY);
+    _canvas.print(gestureHint);
+
+    // Six digit cells, centered. Shifted down from the title/hint block above.
     const int16_t cellW = 30;
     const int16_t cellH = 34;
     const int16_t gap = 6;
     const int16_t totalW = 6 * cellW + 5 * gap;
     const int16_t startX = (_width - totalW) / 2;
-    const int16_t y = 58;
+    const int16_t y = static_cast<int16_t>(hintY + kRowH + kRowGap);
 
     _canvas.setTextSize(3);
     for (uint8_t i = 0; i < 6; ++i) {
@@ -453,84 +472,61 @@ void DisplayUi::drawStatusLines(const char* line1, const char* line2, const char
     }
 
     // Full-bleed status screen: no card border or inset frame — the model name
-    // and connection status sit directly on the background. The framed card the
-    // panel used to draw left a visible border/margin the user asked to remove.
+    // and connection status sit directly on the background.
     const int16_t h = _height;
 
-    // While pairing (unpaired), tell the user to enable pairing on the camera.
-    // Two lines because "ENABLE PAIRING ON CAMERA" at size 2 exceeds 240px.
-    if (displayed == Ui_Pairing) {
-        _canvas.setTextSize(2);
-        _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
-        const char* hint1 = "ENABLE PAIRING";
-        const char* hint2 = "ON CAMERA";
-        const int16_t hint1W = static_cast<int16_t>(strlen(hint1) * 12);
-        const int16_t hint2W = static_cast<int16_t>(strlen(hint2) * 12);
-        _canvas.setCursor((_width - hint1W) / 2, 4);
-        _canvas.print(hint1);
-        _canvas.setCursor((_width - hint2W) / 2, 22);
-        _canvas.print(hint2);
-    }
-
-    // Vertically center the up-to-3-line title/status text block (title,
-    // status word, optional sub-step/hint line) as one group. The block used
-    // to sit at a fixed title y=40 with the status/hint rows pinned to the
-    // bottom (h-55 / h-28), which left a cramped ~12px margin under the last
-    // row against a much larger ~40px margin above the title. Centering the
-    // whole 3-row group evens out the top/bottom margins instead.
-    constexpr int16_t kRowH = 16;  // textSize(2) glyph height
+    // Collect the text lines for the current state, then render them as one
+    // group that is vertically centered on the screen with an equal gap between
+    // every line (the title included). Different states have different line
+    // counts (2-4), so the block height is derived from the actual count rather
+    // than a fixed 3-row assumption -- that keeps the group centered and the
+    // spacing uniform in every state, instead of the block drifting up and the
+    // last gap shrinking whenever an extra line (e.g. the pairing hint on the
+    // camera-off screen) is present.
+    constexpr int16_t kRowH = 16;   // textSize(2) glyph height
     constexpr int16_t kRowGap = 12;
-    constexpr int16_t kBlockH = kRowH * 3 + kRowGap * 2;
-    const int16_t blockTop = static_cast<int16_t>((h - kBlockH) / 2);
-    const int16_t titleY = blockTop;
-    const int16_t statusY = static_cast<int16_t>(blockTop + kRowH + kRowGap);
-    const int16_t hintY = static_cast<int16_t>(statusY + kRowH + kRowGap);
 
-    _canvas.setTextSize(2);
-    _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
-    const char* title = kModelLabel;
-    const int16_t titleW = static_cast<int16_t>(strlen(title) * 12);
-    const int16_t titleX = static_cast<int16_t>((_width - titleW) / 2);
-    _canvas.setCursor(titleX, titleY);
-    _canvas.print(title);
+    struct StatusRow {
+        const char* text;
+        uint16_t color;
+    };
+    StatusRow rows[4];
+    uint8_t rowCount = 0;
+    rows[rowCount++] = StatusRow{kModelLabel, COLOR_WHITE};
 
-    // Camera off gets its own two-line, actionable message; every other
-    // non-connected state renders as the single coalesced "CONNECTING..." with
-    // an optional sub-step accent line beneath it.
     if (displayed == Ui_Waiting) {
-        _canvas.setTextSize(2);
-        const char* offLine = "CAMERA OFF";
-        const int16_t offW = static_cast<int16_t>(strlen(offLine) * 12);
-        _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
-        _canvas.setCursor((_width - offW) / 2, statusY);
-        _canvas.print(offLine);
-        const char* hint = "TURN ON TO CONNECT";
-        const int16_t hintW = static_cast<int16_t>(strlen(hint) * 12);
-        _canvas.setTextSize(2);
-        _canvas.setTextColor(COLOR_AMBER, COLOR_BG);
-        _canvas.setCursor((_width - hintW) / 2, hintY);
-        _canvas.print(hint);
+        rows[rowCount++] = StatusRow{"CAMERA OFF", COLOR_WHITE};
+        rows[rowCount++] = StatusRow{"TURN ON TO CONNECT", COLOR_AMBER};
+        // Either button (KEY2 or the front BtnA) held 3s clears BLE pairing and
+        // starts a fresh pairing scan -- surface that on the screen the user is
+        // looking at when they'd want to re-pair.
+        rows[rowCount++] = StatusRow{"HOLD 3S TO PAIR", COLOR_AMBER};
+    } else if (displayed == Ui_Pairing) {
+        // Two lines because "ENABLE PAIRING ON CAMERA" at size 2 exceeds 240px.
+        rows[rowCount++] = StatusRow{"ENABLE PAIRING", COLOR_AMBER};
+        rows[rowCount++] = StatusRow{"ON CAMERA", COLOR_AMBER};
     } else {
         const char* bleStatus = (displayed == Ui_Connected) ? "CONNECTED"
-                              : (displayed == Ui_Pairing)   ? "PAIRING..."
                               : (displayed == Ui_Checking)  ? "CHECKING..."
                                                             : "CONNECTING...";
-        _canvas.setTextSize(2);
-        const int16_t statusW = static_cast<int16_t>(strlen(bleStatus) * 12);
-        const int16_t statusX = static_cast<int16_t>((_width - statusW) / 2);
-        _canvas.setTextColor(COLOR_WHITE, COLOR_BG);
-        _canvas.setCursor(statusX, statusY);
-        _canvas.print(bleStatus);
-
+        rows[rowCount++] = StatusRow{bleStatus, COLOR_WHITE};
         // Show the live connect sub-step under "CONNECTING..." so the multi-
         // second link/Wi-Fi/live-view bring-up reads as forward progress.
         if (displayed == Ui_Connecting) {
-            const int16_t stepW = static_cast<int16_t>(strlen(connectStep) * 12);
-            _canvas.setTextSize(2);
-            _canvas.setTextColor(COLOR_GRAY, COLOR_BG);
-            _canvas.setCursor((_width - stepW) / 2, hintY);
-            _canvas.print(connectStep);
+            rows[rowCount++] = StatusRow{connectStep, COLOR_GRAY};
         }
+    }
+
+    const int16_t blockH =
+        static_cast<int16_t>(rowCount * kRowH + (rowCount - 1) * kRowGap);
+    int16_t rowY = static_cast<int16_t>((h - blockH) / 2);
+    _canvas.setTextSize(2);
+    for (uint8_t i = 0; i < rowCount; ++i) {
+        const int16_t w = static_cast<int16_t>(strlen(rows[i].text) * 12);
+        _canvas.setTextColor(rows[i].color, COLOR_BG);
+        _canvas.setCursor((_width - w) / 2, rowY);
+        _canvas.print(rows[i].text);
+        rowY = static_cast<int16_t>(rowY + kRowH + kRowGap);
     }
 }
 // Graphic helper to draw WiFi RSSI strength bars

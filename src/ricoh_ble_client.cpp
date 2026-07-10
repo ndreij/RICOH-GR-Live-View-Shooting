@@ -1129,7 +1129,7 @@ void RicohBleClient::begin() {
     return;
   }
 
-  NimBLEDevice::init("RICOH-StickS3");
+  NimBLEDevice::init("GR Remote");
   NimBLEDevice::setPowerLevel(ESP_PWR_LVL_P9);
   configureRicohSecurity();
   NimBLEDevice::setCustomGapHandler(ricohGapEventHandler);

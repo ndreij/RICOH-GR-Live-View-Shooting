@@ -38,15 +38,24 @@ constexpr uint32_t LIVEVIEW_STALL_TIMEOUT_MS = 5000;
 constexpr uint32_t LIVEVIEW_READ_ERROR_GRACE_MS = 2000;
 // When the shutter fires, the camera blanks its LiveView for the exposure: it
 // emits near-black frames and stalls the stream. Freeze the last good frame on
-// screen for this long after a shot so that blank never shows. Keep it just long
-// enough to cover a normal capture without noticeably lagging the live feed.
-constexpr uint32_t PREVIEW_CAPTURE_FREEZE_MS = 1500;
+// screen for this long after a shot, then let the stream through again.
+// Deliberately shorter than the full blank period: we want the last couple of
+// the camera's own black exposure frames to show right at the end of the
+// freeze, as a brief "shutter fired" flash, instead of the freeze fully
+// papering over the blackout and giving zero visual feedback that a shot was
+// taken. Tune to taste on real hardware -- too short and the flash never
+// shows before the live feed resumes; too long and it's back to no feedback.
+constexpr uint32_t PREVIEW_CAPTURE_FREEZE_MS = 1000;
 constexpr uint32_t UI_STATUS_INTERVAL_MS = 1000;
 constexpr uint32_t POWER_BUTTON_POLL_MS = 50;
 constexpr uint32_t POWER_BUTTON_HOLD_MS = 1200;
 constexpr uint32_t POWER_BUTTON_RELEASE_WAIT_MS = 3000;
 constexpr uint8_t KEY2_FALLBACK_GPIO = 12;
 constexpr uint32_t KEY2_PAIRING_RESET_HOLD_MS = 3000;
+// Front button (BtnA) alternative to the KEY2 long-press above: holding BtnA
+// this long also clears BLE pairing and starts a fresh pairing scan. Same
+// duration as KEY2_PAIRING_RESET_HOLD_MS so both gestures feel identical.
+constexpr uint32_t BTNA_PAIRING_HOLD_MS = 3000;
 // On-device BLE passkey entry: BtnA held at least this long locks the current
 // digit and advances to the next; a shorter tap increments the digit.
 constexpr uint32_t PASSKEY_ADVANCE_HOLD_MS = 600;

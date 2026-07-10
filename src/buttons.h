@@ -20,4 +20,6 @@ private:
 
   uint32_t _key2PressedSince = 0;
   bool _key2HoldReported = false;
+  uint32_t _btnAPressedSince = 0;
+  bool _btnAHoldReported = false;
 };
