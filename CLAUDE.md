@@ -30,6 +30,12 @@ platformio test -e native      # host-side 纯逻辑单元测试
 
 已有 host-side native 单元测试覆盖 `MjpegStream` 纯逻辑边界与相机身份名称推导；完整链路验证仍依赖真实硬件（StickS3 + RICOH GR III/IIIx/IV）与串口日志。
 
+## 提交流程约定（Commit workflow）
+
+**每次 commit 前，必须先检查并更新 `README.md` 与 `README_ZH.md`**，使其与本次改动保持一致——尤其是面向用户的行为（按键控制、功能特性、支持的相机、构建环境、状态机流程、屏幕文案）。README 的更新要和代码改动放进**同一个 commit**，然后再 push。两个 README 保持内容对等。
+
+> Before every commit, review and update `README.md` and `README_ZH.md` so they reflect the change — especially user-facing behavior (button controls, features, supported cameras, build environments, state-machine flow, on-screen text). Stage the README edits in the **same commit** as the code, then push. Keep the two READMEs in sync.
+
 ## 模块导航
 
 > ⚠️ **本节已过时（2026-07-09 起）**：`src/` 已从纯扁平结构演进为分层结构，新增了 `src/app/`、`src/board/`、`src/core/`、`src/drivers/`、`src/services/`、`src/supervisor/`、`src/ui/` 等目录（新旧模块目前同时存在，`main.cpp` 两套都在 include）。下表仍是旧的扁平模块列表，仅供参考旧文件的职责，不代表当前完整结构。完整、已核对的文件清单和新旧模块对应关系见 [`docs/project_overview.md`](docs/project_overview.md)「功能模块」一节。同时，本节提到的主状态机（`BleScan → BleReady → WifiConnecting → HttpProbe → LiveViewRunning` + `CameraSleepGuard`）也已重构，见下方「核心状态机」旁注和 `docs/project_overview.md`。

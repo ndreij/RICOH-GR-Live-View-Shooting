@@ -32,7 +32,7 @@
 * **Camera Standby & Wake Guard**: Queries the camera's `Power State` and `Operation Mode` before enabling Wi-Fi to prevent waking up a camera that is explicitly powered down or in standby.
 * **WLAN Parameter Caching**: Caches SSID, BSSID, channel, and encryption details in ESP32 NVS. Subsequent boots achieve ultra-fast connections in `<0.5s` by skipping BLE renegotiation.
 * **Physical Button AF Shutter**: Fully implements the official RICOH BLE Shooting Service protocol, using Button A to trigger high-precision auto-focus (AF) and instant capture.
-* **One-Click BLE Reset**: Long press Button B to clear stored BLE pairing and bonding data, allowing quick pairing with a new camera.
+* **One-Hold BLE Reset**: Hold either the front button (Button A) or the side button (Button B) for 3s to clear stored BLE pairing and bonding data, allowing quick pairing with a new camera.
 * **GR IIIx Support (Experimental)**: The RICOH GR IIIx pairs via on-device passkey entry and runs the full Wi-Fi LiveView flow plus BLE remote shutter (AF + capture). Build with `-e m5stack-sticks3-gr3x`. See [RICOH GR IIIx Support](#ricoh-gr-iiix-support-experimental).
 * **Host-side Native Test Suite**: Allows compiling and running data parser and state transition tests directly on your host machine without hardware.
 
@@ -69,9 +69,9 @@ You can control the viewfinder's behavior using the buttons (Button A, Button B,
 
 | Physical Button | App State / Context | Triggered Action |
 | :--- | :--- | :--- |
-| **Button A** | During LiveView (`LIVEVIEW_RUNNING`) | Triggers BLE Auto-Focus (AF) and shoots (writes `ShootingFlavor=IMMEDIATE`) |
-| **Button A** | Standby Cooldown (`CAMERA_POWER_OFF`) | Manually overrides the guard, resets the BLE stack, and attempts to wake/reconnect |
-| **Button B** | Any State (Long Press for 3s) | Triggers BLE pairing reset: clears stored BLE pairing/bonding information, terminates active Wi-Fi/BLE connections, and restarts scanning for new camera pairing |
+| **Button A** (short tap) | During LiveView (`LIVEVIEW_RUNNING`) | Triggers BLE Auto-Focus (AF) and shoots (writes `ShootingFlavor=IMMEDIATE`). The tap fires on release so it can be told apart from the 3s pairing hold below. |
+| **Button A** (short tap) | Standby / Camera Off (`CAMERA_POWER_OFF`) | Manually overrides the guard, resets the BLE stack, and attempts to wake/reconnect |
+| **Button A** or **Button B** (Hold for 3s) | Any State | Triggers BLE pairing reset: clears stored BLE pairing/bonding information, terminates active Wi-Fi/BLE connections, and restarts scanning for a new camera. The camera-off screen shows a **HOLD 3S TO PAIR** hint for this. |
 | **Power Button (BtnPWR)** | Any State (Long Press) | Gracefully terminates Wi-Fi/BLE connections, closes LiveView, and powers off the StickS3 |
 
 

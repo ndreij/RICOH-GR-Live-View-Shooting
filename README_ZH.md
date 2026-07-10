@@ -32,7 +32,7 @@
 * **智能休眠防误唤醒**：读取相机 `Power State` 和 `Operation Mode` 以确认真实运行状态，防止意外唤醒关机状态下的相机。
 * **WLAN 动态参数缓存**：首次连接后，将相机的 Wi-Fi SSID、BSSID、信道及加密参数持久化写入 NVS，在下次启动时最快以 `<0.5s` 的极速完成直连。
 * **物理按键 AF 遥控快门**：支持理光官方 BLE Shooting Service 协议，通过 Button A 进行高精度自动对焦与瞬间抓拍。
-* **一键重置蓝牙配对**：支持长按 Button B 一键清除旧的蓝牙配对及绑定数据，方便快速切换并配对新相机。
+* **长按重置蓝牙配对**：长按前置按键 (Button A) 或侧边按键 (Button B) 3 秒，即可清除旧的蓝牙配对及绑定数据，方便快速切换并配对新相机。
 * **GR IIIx 支持（实验性）**：理光 GR IIIx 通过在 StickS3 上输入机身屏幕显示的 6 位配对码完成配对，支持完整的 Wi-Fi LiveView 实时取景与 BLE 遥控快门（自动对焦 + 抓拍）。使用 `-e m5stack-sticks3-gr3x` 编译，详见下方 **RICOH GR IIIx 支持（实验性）** 章节。
 * **完整 Native 测试套件**：无需依赖 StickS3 硬件，即可在 Host 端运行核心数据解析和状态转换的本地测试。
 
@@ -68,9 +68,9 @@ platformio run --target upload --upload-port COM6
 
 | 实体按键 | 状态场景 | 触发行为描述 |
 | :--- | :--- | :--- |
-| **Button A** | 实时预览中 (`LIVEVIEW_RUNNING`) | 触发 BLE 自动对焦 (AF) 并进行抓拍 (写入 `ShootingFlavor=IMMEDIATE`) |
-| **Button A** | 防误唤醒休眠状态 (`CAMERA_POWER_OFF`) | 手动清除 Guard 冷却，强行重建 BLE 连接栈并唤醒/重连相机 |
-| **Button B** | 任意状态下 (长按 3 秒) | 触发蓝牙配对重置：清除本地蓝牙配对信息与绑定关系，断开当前 Wi-Fi/BLE 连接，并重新进入 BLE 扫描配对模式 |
+| **Button A**（短按） | 实时预览中 (`LIVEVIEW_RUNNING`) | 触发 BLE 自动对焦 (AF) 并进行抓拍 (写入 `ShootingFlavor=IMMEDIATE`)。短按在松开时触发，以便与下方 3 秒配对长按区分 |
+| **Button A**（短按） | 相机关闭 / 休眠状态 (`CAMERA_POWER_OFF`) | 手动清除 Guard 冷却，强行重建 BLE 连接栈并唤醒/重连相机 |
+| **Button A** 或 **Button B**（长按 3 秒） | 任意状态下 | 触发蓝牙配对重置：清除本地蓝牙配对信息与绑定关系，断开当前 Wi-Fi/BLE 连接，并重新进入 BLE 扫描配对模式。相机关闭画面会显示 **HOLD 3S TO PAIR** 提示 |
 | **电源键 (BtnPWR)** | 任意状态下 (长按) | 优雅断开 Wi-Fi 局域网与 BLE 连接，关闭 LiveView 取景，StickS3 关机 |
 
 
